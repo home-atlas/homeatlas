@@ -1,0 +1,1 @@
+<template><li data-slot="breadcrumb-separator" role="presentation" aria-hidden="true" class="shrink-0"><slot><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="size-4"><path d="m9 5 7 7-7 7" /></svg></slot></li></template>

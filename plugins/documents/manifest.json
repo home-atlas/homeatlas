@@ -1,0 +1,60 @@
+{
+  "contractVersion": "1",
+  "id": "documents",
+  "name": "Documentos",
+  "version": "1.0.0",
+  "collection": {
+    "title": "Mis documentos",
+    "description": "Los originales de tu hogar, con sus datos en orden y acceso privado.",
+    "categories": [
+      {
+        "value": "manuales",
+        "label": "Manuales"
+      },
+      {
+        "value": "recibos",
+        "label": "Recibos"
+      },
+      {
+        "value": "contratos",
+        "label": "Contratos"
+      },
+      {
+        "value": "garantias",
+        "label": "Garantías"
+      },
+      {
+        "value": "otros",
+        "label": "Otros"
+      }
+    ],
+    "mediaTypes": [
+      "application/pdf",
+      "image/png",
+      "image/jpeg",
+      "text/plain"
+    ],
+    "maxFileBytes": 20971520,
+    "legacySnapshot": true,
+    "titleMaxLength": 160,
+    "descriptionMaxLength": 2000,
+    "maxTags": 10,
+    "tagMaxLength": 40
+  },
+  "views": [
+    {
+      "id": "validate",
+      "title": "Validar metadatos",
+      "description": "Política documental aislada",
+      "submitLabel": "Validar",
+      "fields": [
+        {
+          "name": "metadata",
+          "label": "Metadatos",
+          "type": "textarea",
+          "required": true
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "contractVersion": "1", "id": "ext-storage-load", "name": "Storage load fixture", "version": "0.1.0", "wasmSHA256": "filled-by-package-script", "storage": "user",
+  "views": [
+    {"id":"write","title":"Write fixture","description":"Disposable storage measurement","submitLabel":"Write","fields":[{"name":"start","label":"Start","type":"number","required":true},{"name":"count","label":"Count","type":"number","required":true},{"name":"bytes","label":"Bytes","type":"number","required":true},{"name":"seed","label":"Seed","type":"number","required":true}]},
+    {"id":"check","title":"Check fixture","description":"Disposable storage verification","submitLabel":"Check","readOnly":true,"fields":[{"name":"start","label":"Start","type":"number","required":true},{"name":"count","label":"Count","type":"number","required":true},{"name":"bytes","label":"Bytes","type":"number","required":true},{"name":"seed","label":"Seed","type":"number","required":true}]},
+    {"id":"delete","title":"Delete fixture","description":"Disposable storage measurement","submitLabel":"Delete","fields":[{"name":"start","label":"Start","type":"number","required":true},{"name":"count","label":"Count","type":"number","required":true},{"name":"bytes","label":"Bytes","type":"number","required":true},{"name":"seed","label":"Seed","type":"number","required":true}]}
+  ]
+}

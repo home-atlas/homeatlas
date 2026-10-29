@@ -1,0 +1,16 @@
+/data/
+/bin/
+.DS_Store
+.env
+apps/web/node_modules/
+apps/web/dist/
+apps/web/*.tsbuildinfo
+
+# Python-generated caches
+__pycache__/
+*.py[cod]
+
+/.agents/
+
+/examples/
+/AGENTS.md

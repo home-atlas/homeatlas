@@ -1,0 +1,367 @@
+{
+  "contractVersion": "1",
+  "id": "ext-shared-load",
+  "name": "Shared storage load fixture",
+  "version": "0.1.0",
+  "wasmSHA256": "filled-by-package-script",
+  "storage": "shared",
+  "views": [
+    {
+      "id": "write",
+      "title": "Write fixture",
+      "description": "Disposable storage measurement",
+      "submitLabel": "Write",
+      "fields": [
+        {
+          "name": "start",
+          "label": "Start",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "count",
+          "label": "Count",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "bytes",
+          "label": "Bytes",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "seed",
+          "label": "Seed",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "user",
+          "label": "Fixture recipient",
+          "type": "text",
+          "required": false
+        },
+        {
+          "name": "permission",
+          "label": "Fixture grant",
+          "type": "text",
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "check",
+      "title": "Check fixture",
+      "description": "Disposable storage verification",
+      "submitLabel": "Check",
+      "readOnly": true,
+      "fields": [
+        {
+          "name": "start",
+          "label": "Start",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "count",
+          "label": "Count",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "bytes",
+          "label": "Bytes",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "seed",
+          "label": "Seed",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "user",
+          "label": "Fixture recipient",
+          "type": "text",
+          "required": false
+        },
+        {
+          "name": "permission",
+          "label": "Fixture grant",
+          "type": "text",
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "delete",
+      "title": "Delete fixture",
+      "description": "Disposable storage measurement",
+      "submitLabel": "Delete",
+      "fields": [
+        {
+          "name": "start",
+          "label": "Start",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "count",
+          "label": "Count",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "bytes",
+          "label": "Bytes",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "seed",
+          "label": "Seed",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "user",
+          "label": "Fixture recipient",
+          "type": "text",
+          "required": false
+        },
+        {
+          "name": "permission",
+          "label": "Fixture grant",
+          "type": "text",
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "shared_write",
+      "title": "shared_write",
+      "description": "Disposable shared storage fixture",
+      "submitLabel": "Run fixture",
+      "fields": [
+        {
+          "name": "start",
+          "label": "Start",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "count",
+          "label": "Count",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "bytes",
+          "label": "Bytes",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "seed",
+          "label": "Seed",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "user",
+          "label": "Fixture recipient",
+          "type": "text",
+          "required": false
+        },
+        {
+          "name": "permission",
+          "label": "Fixture grant",
+          "type": "text",
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "shared_check",
+      "title": "shared_check",
+      "description": "Disposable shared storage fixture",
+      "submitLabel": "Run fixture",
+      "fields": [
+        {
+          "name": "start",
+          "label": "Start",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "count",
+          "label": "Count",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "bytes",
+          "label": "Bytes",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "seed",
+          "label": "Seed",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "user",
+          "label": "Fixture recipient",
+          "type": "text",
+          "required": false
+        },
+        {
+          "name": "permission",
+          "label": "Fixture grant",
+          "type": "text",
+          "required": false
+        }
+      ],
+      "readOnly": true
+    },
+    {
+      "id": "shared_missing",
+      "title": "shared_missing",
+      "description": "Disposable shared storage fixture",
+      "submitLabel": "Run fixture",
+      "fields": [
+        {
+          "name": "start",
+          "label": "Start",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "count",
+          "label": "Count",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "bytes",
+          "label": "Bytes",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "seed",
+          "label": "Seed",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "user",
+          "label": "Fixture recipient",
+          "type": "text",
+          "required": false
+        },
+        {
+          "name": "permission",
+          "label": "Fixture grant",
+          "type": "text",
+          "required": false
+        }
+      ],
+      "readOnly": true
+    },
+    {
+      "id": "grant",
+      "title": "grant",
+      "description": "Disposable shared storage fixture",
+      "submitLabel": "Run fixture",
+      "fields": [
+        {
+          "name": "start",
+          "label": "Start",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "count",
+          "label": "Count",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "bytes",
+          "label": "Bytes",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "seed",
+          "label": "Seed",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "user",
+          "label": "Fixture recipient",
+          "type": "text",
+          "required": false
+        },
+        {
+          "name": "permission",
+          "label": "Fixture grant",
+          "type": "text",
+          "required": false
+        }
+      ],
+      "permission": "share"
+    },
+    {
+      "id": "revoke",
+      "title": "revoke",
+      "description": "Disposable shared storage fixture",
+      "submitLabel": "Run fixture",
+      "fields": [
+        {
+          "name": "start",
+          "label": "Start",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "count",
+          "label": "Count",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "bytes",
+          "label": "Bytes",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "seed",
+          "label": "Seed",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "user",
+          "label": "Fixture recipient",
+          "type": "text",
+          "required": false
+        },
+        {
+          "name": "permission",
+          "label": "Fixture grant",
+          "type": "text",
+          "required": false
+        }
+      ],
+      "permission": "share"
+    }
+  ]
+}

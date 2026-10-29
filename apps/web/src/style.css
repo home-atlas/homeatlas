@@ -1,0 +1,239 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@font-face {
+  font-family: 'Inter Variable'; font-style: normal; font-weight: 100 900; font-display: swap;
+  src: url('@fontsource-variable/inter/files/inter-latin-wght-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Manrope Variable'; font-style: normal; font-weight: 200 800; font-display: swap;
+  src: url('@fontsource-variable/manrope/files/manrope-latin-wght-normal.woff2') format('woff2');
+}
+
+@theme inline {
+    --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+    --font-heading: 'Manrope Variable', ui-sans-serif, system-ui, sans-serif;
+    --color-heading: var(--heading);
+    --color-primary-hover: var(--primary-hover);
+    --color-success: var(--success);
+    --color-danger-muted: var(--danger-muted);
+    --color-danger-hover: var(--danger-hover);
+    --color-warning: var(--warning);
+    --color-warning-foreground: var(--warning-foreground);
+    --color-warning-muted: var(--warning-muted);
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --radius-sm: calc(var(--radius) - 4px);
+    --radius-md: calc(var(--radius) - 2px);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) + 4px);
+}
+
+/* Brand colors are the HomeAtlas · Color variables in Figma. */
+:root {
+  --brand-atlas-blue: #2563EB;
+  --brand-deep-navy: #1E293B;
+  --brand-warm-amber: #D97706;
+  --brand-warm-canvas: #F8F5F1;
+  --brand-pure-white: #FFFFFF;
+  --brand-soft-slate: #64748B;
+  --brand-stone: #E2E8F0;
+  --brand-pale-blue: #EFF6FF;
+  --brand-terracotta: #C4603D;
+  --brand-button-hover: #1D4ED8;
+  --brand-body-text: #334155;
+
+  --background: var(--brand-warm-canvas);
+  --foreground: var(--brand-body-text);
+  --heading: var(--brand-deep-navy);
+  --card: var(--brand-pure-white);
+  --card-foreground: var(--foreground);
+  --popover: var(--card);
+  --popover-foreground: var(--foreground);
+  --primary: var(--brand-atlas-blue);
+  --primary-hover: var(--brand-button-hover);
+  --primary-foreground: var(--brand-pure-white);
+  --secondary: var(--brand-pale-blue);
+  --secondary-foreground: var(--primary);
+  --muted: #F1F5F9;
+  /* Soft Slate is too faint on canvas/blue tints; use this accessible text shade. */
+  --muted-foreground: #526277;
+  --accent: #DBEAFE;
+  --accent-foreground: var(--primary-hover);
+  --destructive: #B91C1C;
+  --danger-muted: #FEF2F2;
+  --danger-hover: #FEE2E2;
+  --success: #15803D;
+  --warning: var(--brand-warm-amber);
+  --warning-foreground: #92400E;
+  --warning-muted: #FFFBEB;
+  --border: var(--brand-stone);
+  /* Stronger than decorative Stone so field boundaries remain visible. */
+  --input: #7B8BA0;
+  --ring: var(--primary);
+  --chart-1: var(--primary);
+  --chart-2: var(--brand-warm-amber);
+  --chart-3: var(--brand-terracotta);
+  --chart-4: var(--brand-soft-slate);
+  --chart-5: var(--brand-deep-navy);
+  --radius: 0.75rem;
+  --sidebar: var(--card);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--secondary);
+  --sidebar-accent-foreground: var(--primary);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+
+  --control-height: 3rem;
+  --control-height-sm: 2.75rem;
+  --control-height-lg: 3.25rem;
+  --textarea-min-height: 7.5rem;
+  --sidebar-width: 15.5rem;
+  --content-max-width: 72rem;
+  --auth-max-width: 32rem;
+  --drawer-width: 35rem;
+  --drawer-compact-width: 32rem;
+}
+
+/* The product currently exposes the light theme; retain coherent semantic dark tokens. */
+.dark {
+  --background: #0F172A;
+  --foreground: #E2E8F0;
+  --heading: #F8FAFC;
+  --card: #1E293B;
+  --card-foreground: var(--foreground);
+  --popover: var(--card);
+  --popover-foreground: var(--foreground);
+  --primary: #93C5FD;
+  --primary-hover: #BFDBFE;
+  --primary-foreground: #172554;
+  --secondary: #172F54;
+  --secondary-foreground: #BFDBFE;
+  --muted: #26354A;
+  --muted-foreground: #B8C6D9;
+  --accent: #1E3A5F;
+  --accent-foreground: #DBEAFE;
+  --destructive: #FCA5A5;
+  --danger-muted: #450A0A;
+  --danger-hover: #5D1010;
+  --success: #86EFAC;
+  --warning: #FBBF24;
+  --warning-foreground: #FDE68A;
+  --warning-muted: #422006;
+  --border: #475569;
+  --input: #8193AA;
+  --ring: var(--primary);
+}
+
+@layer base {
+  * { @apply border-border; }
+  body { @apply bg-background font-sans text-foreground antialiased; }
+  h1, h2, h3, [data-slot='card-title'] { @apply font-heading text-heading; }
+  ::selection { background: var(--accent); color: var(--accent-foreground); }
+}
+@layer components {
+  .form-label { @apply text-sm leading-5 font-semibold text-heading; }
+  .form-input {
+    @apply block w-full rounded-lg border border-input bg-card px-3.5 py-2.5 text-base leading-6 text-foreground outline-none transition-colors placeholder:text-muted-foreground hover:border-muted-foreground focus-visible:border-ring focus-visible:outline-solid focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-ring disabled:cursor-not-allowed disabled:bg-muted disabled:opacity-60;
+    min-height: var(--control-height);
+  }
+  .form-input-lg { min-height: var(--control-height-lg); }
+  textarea.form-input { min-height: var(--textarea-min-height); resize: vertical; }
+  .form-file {
+    @apply block w-full text-sm leading-6 text-foreground file:mr-3 file:min-h-11 file:cursor-pointer file:rounded-lg file:border-0 file:bg-secondary file:px-4 file:py-2 file:text-sm file:font-semibold file:text-secondary-foreground focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring;
+    min-height: var(--control-height);
+  }
+  .form-option { @apply grid min-h-11 grid-cols-[20px_minmax(0,1fr)] items-start gap-3 py-2.5 text-sm leading-6; }
+  .form-checkbox { @apply mt-0.5 size-5 shrink-0 accent-primary focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring; }
+  .nav-item { @apply flex min-h-12 items-center rounded-lg px-4 py-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-primary focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring; }
+  .nav-active { @apply bg-secondary font-semibold text-primary; }
+}
+
+/* Home: photography is decorative; data and controls remain on readable surfaces. */
+@layer components {
+  .home-hero { background: var(--card); }
+  .home-hero-photo { background: url('./assets/home-living-room.jpg') right center / cover no-repeat; }
+  .home-hero-wash { background: linear-gradient(90deg, var(--card) 5%, color-mix(in srgb, var(--card) 93%, transparent) 37%, color-mix(in srgb, var(--card) 25%, transparent) 75%, transparent); }
+  .home-search-panel { backdrop-filter: blur(14px); box-shadow: 0 4px 32px color-mix(in srgb, var(--heading) 3%, transparent); }
+  .home-search-input { min-height: 4rem; border-radius: 0.875rem; }
+  .home-suggestion { @apply flex min-h-16 items-center gap-3 rounded-xl px-4 py-3 text-left text-sm leading-5 transition-colors hover:brightness-95 focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring; }
+  .home-tint-blue { @apply border-primary/10 bg-secondary text-primary; }
+  .home-tint-amber { @apply border-warning/10 bg-warning-muted text-warning-foreground; }
+  .home-tint-warm { background: color-mix(in srgb, var(--brand-terracotta) 7%, var(--card)); border-color: color-mix(in srgb, var(--brand-terracotta) 12%, var(--card)); color: var(--warning-foreground); }
+  .home-eyebrow { @apply mb-1 text-[10px] font-semibold tracking-widest text-muted-foreground uppercase; }
+  .home-section-title { @apply text-2xl font-extrabold tracking-tight; }
+  .home-text-link { @apply inline-flex min-h-11 items-center gap-2 rounded-lg px-1 text-sm font-semibold text-primary hover:text-primary-hover focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring; }
+  .home-action-card { @apply relative flex min-h-36 items-center gap-3 overflow-hidden rounded-2xl border p-4 pr-15 transition-shadow; }
+  a.home-action-card { @apply hover:shadow-sm focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring; }
+  .home-action-image { @apply h-24 w-16 shrink-0 rounded-xl object-cover; object-position: 78% center; }
+  .home-card-caption { @apply flex items-center gap-1.5 text-xs leading-5 font-medium; }
+  .home-action-card h3 { @apply mt-2 text-base leading-6 font-bold; }
+  .home-action-card p:not(.home-card-caption) { @apply mt-1 text-sm leading-5 text-muted-foreground; }
+  .home-action-card .home-arrow { top: 50%; right: 12px; bottom: auto; margin-top: -22px; }
+  .home-card-link { @apply block rounded-lg focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring; }
+  .home-card-link::after { content: ''; position: absolute; inset: 0; }
+  .home-arrow { @apply absolute right-4 bottom-4 flex size-11 shrink-0 items-center justify-center rounded-full border border-border/60 bg-card/95 text-muted-foreground transition-transform group-hover:translate-x-1; }
+  .home-space { @apply relative isolate flex min-h-48 items-end overflow-hidden rounded-2xl border border-border/60 p-5 focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring; }
+  .home-space img { @apply absolute inset-0 -z-20 size-full object-cover transition-transform duration-500 group-hover:scale-105; }
+  .home-space-module img { object-position: right center; }
+  .home-space-family img { object-position: right center; }
+  .home-space-modules img { object-position: right center; }
+  .home-space-wash { @apply absolute inset-0 -z-10; background: linear-gradient(90deg, var(--card) 5%, color-mix(in srgb, var(--card) 94%, transparent) 25%, color-mix(in srgb, var(--card) 75%, transparent) 45%, transparent 85%); }
+  .home-space h3 { @apply text-base font-bold; }
+  .home-space p { @apply mt-1 max-w-40 text-sm leading-5 text-muted-foreground; }
+  .home-result { @apply flex min-h-18 items-center gap-3 rounded-lg py-3 transition-colors hover:bg-secondary/50 focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring; }
+}
+@layer components {
+  .app-sidebar { padding: 24px 0 24px 24px; }
+  .app-sidebar-panel { @apply rounded-3xl border border-border/40 bg-card/70 p-2; }
+  .sidebar-navigation .nav-item { @apply rounded-xl px-4 text-sm text-foreground; }
+  .sidebar-navigation .nav-item svg { @apply size-6 text-muted-foreground; }
+  .sidebar-navigation .nav-active { @apply bg-accent/50 text-primary; }
+  .sidebar-navigation .nav-active svg { @apply text-primary; }
+  .sidebar-separator { margin-block: 20px; }
+  .sidebar-module-label { @apply flex min-h-11 items-center rounded-lg px-4 text-[10px] font-semibold tracking-widest text-muted-foreground uppercase hover:text-primary focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring; }
+}
+@media (min-width: 1024px) {
+  .home-sidebar-note { height: clamp(12rem, calc(100dvh - 33rem), 21.5rem); flex-shrink: 0; margin-top: auto; }
+}
+
+@media (max-width: 639px) {
+  .home-hero-wash { background: linear-gradient(90deg, var(--card) 10%, color-mix(in srgb, var(--card) 90%, transparent) 70%, color-mix(in srgb, var(--card) 65%, transparent)); }
+  .home-hero-photo { background-position: 80% bottom; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .home-space img, .home-arrow { transition: none; }
+}

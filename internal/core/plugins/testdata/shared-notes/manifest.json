@@ -1,0 +1,165 @@
+{
+  "contractVersion": "1",
+  "id": "ext-shared-notes",
+  "name": "Notas del hogar",
+  "version": "0.2.0",
+  "wasmSHA256": "filled-by-package-script",
+  "storage": "shared",
+  "views": [
+    {
+      "id": "private_save",
+      "title": "Guardar nota privada",
+      "description": "Solo tú puedes consultarla desde el plugin. Las copias completas del propietario incluyen estos datos.",
+      "submitLabel": "Guardar",
+      "fields": [
+        {
+          "name": "key",
+          "label": "Clave de la nota (por ejemplo, compras)",
+          "type": "text",
+          "required": true
+        },
+        {
+          "name": "value",
+          "label": "Tu nota",
+          "type": "textarea",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "private_read",
+      "title": "Leer nota privada",
+      "description": "Consulta una nota de tu espacio privado.",
+      "submitLabel": "Consultar",
+      "fields": [
+        {
+          "name": "key",
+          "label": "Clave de la nota (por ejemplo, compras)",
+          "type": "text",
+          "required": true
+        }
+      ],
+      "readOnly": true
+    },
+    {
+      "id": "save",
+      "title": "Guardar nota compartida",
+      "description": "Crea una nota inicialmente visible solo para ti o edita una que te hayan compartido con permiso de edición.",
+      "submitLabel": "Guardar",
+      "fields": [
+        {
+          "name": "key",
+          "label": "Clave de la nota (por ejemplo, compras)",
+          "type": "text",
+          "required": true
+        },
+        {
+          "name": "value",
+          "label": "Tu nota",
+          "type": "textarea",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "read",
+      "title": "Leer nota compartida",
+      "description": "Solo puedes leer notas propias o compartidas contigo.",
+      "submitLabel": "Consultar",
+      "fields": [
+        {
+          "name": "key",
+          "label": "Clave de la nota (por ejemplo, compras)",
+          "type": "text",
+          "required": true
+        }
+      ],
+      "readOnly": true
+    },
+    {
+      "id": "list",
+      "title": "Notas a las que tengo acceso",
+      "description": "Lista claves de notas propias o compartidas contigo; usa la continuación si hay más resultados.",
+      "submitLabel": "Consultar claves",
+      "fields": [
+        {
+          "name": "after",
+          "label": "Continuar después de (opcional)",
+          "type": "text",
+          "required": false
+        }
+      ],
+      "readOnly": true
+    },
+    {
+      "id": "grant",
+      "title": "Compartir una nota",
+      "description": "Solo su creador puede compartirla. Escribe read para lectura o write para edición; la persona debe pertenecer al hogar.",
+      "submitLabel": "Aplicar permiso",
+      "fields": [
+        {
+          "name": "key",
+          "label": "Clave de la nota (por ejemplo, compras)",
+          "type": "text",
+          "required": true
+        },
+        {
+          "name": "user",
+          "label": "Identificador de la persona del hogar",
+          "type": "text",
+          "required": true
+        },
+        {
+          "name": "permission",
+          "label": "Permiso: read (lectura) o write (edición)",
+          "type": "text",
+          "required": true
+        }
+      ],
+      "permission": "share"
+    },
+    {
+      "id": "revoke",
+      "title": "Revocar acceso",
+      "description": "Solo el creador puede retirar el acceso de esta persona a la nota.",
+      "submitLabel": "Revocar acceso",
+      "fields": [
+        {
+          "name": "key",
+          "label": "Clave de la nota (por ejemplo, compras)",
+          "type": "text",
+          "required": true
+        },
+        {
+          "name": "user",
+          "label": "Identificador de la persona del hogar",
+          "type": "text",
+          "required": true
+        }
+      ],
+      "permission": "share"
+    },
+    {
+      "id": "grants",
+      "title": "Consultar accesos",
+      "description": "Solo el creador puede consultar los accesos concedidos a esta nota.",
+      "submitLabel": "Consultar accesos",
+      "fields": [
+        {
+          "name": "key",
+          "label": "Clave de la nota (por ejemplo, compras)",
+          "type": "text",
+          "required": true
+        },
+        {
+          "name": "after",
+          "label": "Continuar después de (opcional)",
+          "type": "text",
+          "required": false
+        }
+      ],
+      "readOnly": true,
+      "permission": "share"
+    }
+  ]
+}
