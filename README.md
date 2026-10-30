@@ -1,43 +1,51 @@
 <p align="center">
-  <img src="apps/web/src/assets/homeatlas-mark.svg" alt="Icono de HomeAtlas" width="96" />
+  <img src="apps/web/src/assets/homeatlas-mark.svg" alt="HomeAtlas app icon" width="96" />
 </p>
 
 <h1 align="center">HomeAtlas</h1>
 
 <p align="center">
-  Un lugar para los documentos y la organización de tu hogar.<br />
-  <strong>Autohospedado · Modular · Local por defecto</strong>
+  A home for your household's documents and everyday knowledge.<br />
+  <strong>Self-hosted · Modular · Local by default</strong>
 </p>
 
-HomeAtlas es una plataforma familiar que instalas en tu propio servidor para guardar documentos, encontrar información y compartirla con las personas de tu hogar. Funciona con un proceso Go, una interfaz web y SQLite, sin servicios externos obligatorios.
+<p align="center">
+  <a href="https://github.com/home-atlas/homeatlas/actions/workflows/ci.yml"><img src="https://github.com/home-atlas/homeatlas/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status" /></a>
+  <a href="go.mod"><img src="https://img.shields.io/badge/Go-1.27.1%2B-00ADD8?logo=go&logoColor=white" alt="Go 1.27.1 or later" /></a>
+  <a href="apps/web/package.json"><img src="https://img.shields.io/badge/Node.js-24%2B-339933?logo=nodedotjs&logoColor=white" alt="Node.js 24 or later" /></a>
+  <a href="#architecture"><img src="https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white" alt="Vue 3" /></a>
+  <a href="#roadmap"><img src="https://img.shields.io/badge/status-experimental-orange" alt="Experimental project" /></a>
+</p>
 
-El núcleo gestiona cuentas, hogares y permisos. Las funciones de producto se incorporan mediante plugins independientes: **Documentos** es el primero y se instala sin recompilar el núcleo.
+HomeAtlas is a family platform you run on your own server to store documents, find information and share it with the people in your household. It combines a single Go process, a web interface and SQLite, with no mandatory external services.
 
-> **Estado:** desarrollo activo. El contrato de plugins es experimental. La licencia del proyecto está pendiente de formalizar; consulta [Licencia](#licencia).
+The core manages accounts, households and permissions. Product features arrive as independent plugins: **Documents** is the first and can be installed without rebuilding the core.
 
-## Qué puedes hacer
+> **Status:** active development. The plugin contract is experimental. The project's license has not yet been finalized; see [License](#license).
 
-| Función | Disponible |
+## Features
+
+| Feature | Available today |
 | --- | --- |
-| Documentos | Subir PDF, PNG, JPEG y TXT de hasta 20 MiB; editar metadatos, filtrar y buscar por título, descripción o etiquetas. |
-| Familia y permisos | Invitar miembros, asignar roles y compartir lectura y descarga de documentos con personas concretas. |
-| Almacenamiento | Usar disco local o un bucket S3 compatible; trasladar documentos existentes entre ambos destinos desde Configuración. |
-| Copias de seguridad | Crear copias cifradas, programarlas y restaurar datos o recuperar un hogar en una instalación nueva. |
-| Acceso | Iniciar sesión con usuario o correo y contraseña; preparar acceso asistido con PIN vinculado al dispositivo para cuentas elegibles. |
-| Plugins | Instalar paquetes WASI aprobados mediante CLI y reinicio, sin reconstruir el núcleo. |
+| Documents | Upload PDF, PNG, JPEG and TXT files up to 20 MiB; edit metadata, filter and search by title, description or tags. |
+| Family and permissions | Invite members, assign roles and explicitly share document viewing and downloading with specific people. |
+| Storage | Choose local disk or an S3-compatible bucket; move existing documents between them from Settings. |
+| Backups | Create encrypted backups, schedule them, restore household data or recover a household on a new installation. |
+| Access | Sign in with a username or email and password; set up assisted access with a device-bound PIN for eligible accounts. |
+| Plugins | Install approved WASI packages through the CLI and restart, without rebuilding the core. |
 
-La búsqueda actual utiliza metadatos: no incluye OCR ni búsqueda dentro del contenido de los archivos. Las funciones de IA, inventario y garantías forman parte del roadmap.
+Search currently covers metadata, not OCR or file contents. AI, inventory and warranty features are on the roadmap.
 
-## Inicio rápido
+## Quick start
 
-### Requisitos
+### Requirements
 
-- **Go 1.27.1 o superior**.
-- **Node.js 24 o superior**, con npm.
+- **Go 1.27.1 or later**.
+- **Node.js 24 or later**, with npm.
 - **Make**.
-- **Python 3** para empaquetar plugins y ejecutar sus pruebas de integración.
+- **Python 3** to package plugins and run their integration tests.
 
-### Compilar y arrancar
+### Build and run
 
 ```sh
 git clone https://github.com/home-atlas/homeatlas.git
@@ -47,103 +55,103 @@ make build
 ./bin/homeatlas
 ```
 
-Abre [http://127.0.0.1:8080](http://127.0.0.1:8080).
+Open [http://127.0.0.1:8080](http://127.0.0.1:8080).
 
-En el primer arranque se genera un código privado en `data/setup-code`. Consúltalo desde otra terminal del servidor:
+On first startup, HomeAtlas generates a private setup code in `data/setup-code`. Read it from another terminal on the server:
 
 ```sh
 cat ./data/setup-code
 ```
 
-Úsalo en la pantalla de alta para crear la cuenta de propietario y el hogar. No hay credenciales predeterminadas ni registro público abierto; después del alta, los demás miembros acceden mediante invitación.
+Use it on the setup screen to create the owner account and household. There are no default credentials or open public registration; additional household members join by invitation.
 
-El núcleo arranca con un catálogo vacío. Para añadir la biblioteca de documentos, instala el plugin siguiente.
+The core starts with an empty module catalog. Install the following plugin to add the document library. The application interface is currently in Spanish; the navigation labels below match it.
 
-## Instalar Documentos
+## Install Documents
 
-Documentos se compila como un paquete `.hap` separado del ejecutable del servidor.
+Documents builds into a `.hap` package separately from the server executable.
 
 ```sh
 make plugin-documents PACKAGE_OUT=bin/plugins/documents.hap
 ```
 
-El empaquetador muestra el SHA-256 del paquete. **Detén el servidor** y sustituye `SHA256_DEL_PAQUETE` por ese valor antes de instalarlo:
+The packager prints the package's SHA-256. **Stop the server**, then replace `PACKAGE_SHA256` below with that value:
 
 ```sh
 ./bin/homeatlas plugins install \
   -data ./data \
   -file ./bin/plugins/documents.hap \
-  -sha256 SHA256_DEL_PAQUETE \
+  -sha256 PACKAGE_SHA256 \
   -allow documents.read,documents.write,documents.share,documents.files,documents.collection
 
 ./bin/homeatlas
 ```
 
-El paquete aparecerá en **Mis módulos**. Si ya existe el archivo de salida, usa otra ruta en `PACKAGE_OUT`: el empaquetador no sobrescribe paquetes.
+The package appears under **Mis módulos**. If the output file already exists, choose a different `PACKAGE_OUT` path: the packager does not overwrite packages.
 
-Para consultar los paquetes instalados:
+List installed packages with:
 
 ```sh
 ./bin/homeatlas plugins list -data ./data
 ```
 
-Instalar un paquete compatible requiere reiniciar el servidor, pero no recompilar el núcleo. La activación por hogar se administra desde la interfaz y conserva los datos y permisos al desactivarse. Otros miembros reciben únicamente los permisos que se les concedan.
+Installing a compatible package requires a restart, but no core rebuild. Manage activation per household in the interface; deactivation preserves data and permissions. Other members receive only the permissions explicitly granted to them.
 
-## Local o S3: tú eliges
+## Local or S3: your choice
 
-En **Configuración → Almacenamiento de archivos**, el propietario puede elegir el destino de las nuevas subidas:
+Under **Configuración → Almacenamiento de archivos**, the owner can choose where new uploads are stored:
 
-- **Local**, seleccionado por defecto, guarda los originales en el servidor.
-- **S3** utiliza un bucket privado, región y credenciales. Admite endpoint HTTPS y direccionamiento path-style para proveedores compatibles.
+- **Local**, the default, keeps originals on the server.
+- **S3** uses a private bucket, region and credentials. Custom HTTPS endpoints and path-style addressing support compatible providers.
 
-Antes de activar S3, HomeAtlas comprueba escritura, lectura y borrado. Las credenciales se guardan cifradas en el servidor y no se entregan al plugin ni se devuelven al navegador.
+Before enabling S3, HomeAtlas checks write, read and delete access. Credentials are stored encrypted on the server; they are neither passed to the plugin nor returned to the browser.
 
-Cambiar el destino no mueve automáticamente los archivos anteriores. Para trasladarlos:
+Changing the destination does not automatically move existing files. To transfer them:
 
-1. Guarda Local o S3 como destino.
-2. Abre **Mover documentos existentes** y revisa la cantidad y el tamaño pendientes.
-3. Confirma el traslado y mantén abierta la pestaña para que continúe el lote.
+1. Save Local or S3 as the destination.
+2. Open **Mover documentos existentes** and review the pending file count and size.
+3. Confirm the transfer and keep the tab open for the batch to continue.
 
-Cada copia se verifica por tamaño y SHA-256 antes de cambiar su ubicación y retirar el original. Se conservan identificadores, metadatos y permisos. Puedes detener el proceso al terminar el archivo en curso y continuar después; una limpieza fallida queda pendiente para reintento.
+Each copy is verified by size and SHA-256 before its location changes and the source is removed. Identifiers, metadata and permissions are preserved. You can stop after the current file and resume later; failed source cleanup remains available for retry.
 
-S3 se aplica a los originales de las colecciones. SQLite, los paquetes instalados y las copias automáticas permanecen en el servidor local.
+S3 stores collection originals only. SQLite, installed packages and scheduled backup archives remain on the local server.
 
-## Privacidad y recuperación
+## Privacy and recovery
 
-Los documentos son privados para su propietario hasta que los comparta expresamente. Los destinatarios autorizados pueden consultarlos y descargarlos; no editarlos ni volver a compartirlos. Ser administrador no concede acceso de navegación a todos los documentos privados.
+Documents are private to their owner until explicitly shared. Authorized recipients can view and download them, but cannot edit or reshare them. Administrator status does not grant browsing access to every private document.
 
-Las copias completas del propietario **sí incluyen los datos privados de los módulos del hogar**. Se cifran con contraseña y pueden descargarse o generarse automáticamente en el servidor. Guarda la contraseña por separado y conserva copias fuera del equipo que ejecuta HomeAtlas.
+The owner's full backups **do include private module data for the household**. Backups are password-encrypted and can be downloaded or generated automatically on the server. Keep the password separately and retain copies outside the machine running HomeAtlas.
 
-Para recuperar módulos externos, conserva también el paquete `.hap` exacto: las copias contienen datos, no instalan código ejecutable. Las credenciales S3, la configuración SMTP, las sesiones y los vínculos de dispositivos PIN no se exportan. En una instalación nueva se configuran de nuevo.
+To recover external modules, also retain the exact `.hap` package: backups contain data, not executable installers. S3 credentials, SMTP configuration, sessions and PIN device bindings are not exported. Configure them again on a new installation.
 
-Las copias incluyen los originales locales y S3. Al restaurarlos se escriben en local, por lo que la recuperación no necesita las credenciales del proveedor de origen. El cifrado de las copias no cifra automáticamente la base de datos ni los originales locales en uso.
+Backups include originals from local storage and S3. Restoration writes originals locally, so recovery does not need the source provider's credentials. Backup encryption does not automatically encrypt the live database or local originals.
 
-## Arquitectura
+## Architecture
 
-| Capa | Tecnología |
+| Layer | Technology |
 | --- | --- |
-| Servidor | Go |
-| Interfaz | Vue 3, TypeScript, Vite y shadcn-vue |
-| Metadatos y búsqueda | SQLite con WAL y FTS5 |
-| Archivos | Disco local o S3 compatible |
-| Plugins externos | WASI Preview 1, ejecutado con wazero |
-| Copias cifradas | age |
+| Server | Go |
+| Interface | Vue 3, TypeScript, Vite and shadcn-vue |
+| Metadata and search | SQLite with WAL and FTS5 |
+| Files | Local disk or S3-compatible storage |
+| External plugins | WASI Preview 1, executed with wazero |
+| Encrypted backups | age |
 
-La web compilada se integra en el ejecutable de Go. Los plugins aportan su manifiesto y código WASI; el núcleo proporciona componentes de interfaz y operaciones de almacenamiento autorizadas. Los invitados no reciben acceso directo a SQL, archivos, red ni credenciales, y no distribuyen JavaScript de terceros al navegador.
+The compiled web interface is embedded in the Go executable. Plugins provide a manifest and WASI code; the core supplies shared interface components and authorized storage operations. Guests receive no direct SQL, filesystem, network or credential access, and cannot ship third-party browser JavaScript.
 
 ```text
-apps/web/             Interfaz y componentes compartidos
-cmd/homeatlas/        Servidor y comandos CLI
-internal/core/        Identidad, permisos, módulos, almacenamiento y copias
-internal/app/         Integración HTTP y pruebas de aplicación
-plugins/documents/    Fuente y manifiesto del plugin Documentos
-sdk/pluginstorage/    SDK experimental de almacenamiento para WASI
-scripts/              Empaquetado, verificación y medición
+apps/web/             Web interface and shared components
+cmd/homeatlas/        Server and CLI entry point
+internal/core/        Identity, permissions, modules, storage and backups
+internal/app/         HTTP integration and application tests
+plugins/documents/    Documents plugin source and manifest
+sdk/pluginstorage/    Experimental WASI storage SDK
+scripts/              Packaging, verification and measurement tools
 ```
 
-## Desarrollo
+## Development
 
-Instala las dependencias con `make install` y ejecuta en dos terminales:
+Install dependencies with `make install`, then run these commands in two terminals:
 
 ```sh
 # Terminal 1: API
@@ -151,21 +159,31 @@ make dev-api
 ```
 
 ```sh
-# Terminal 2: interfaz con recarga automática
+# Terminal 2: web interface with hot reload
 make dev-web
 ```
 
-Abre [http://127.0.0.1:5173](http://127.0.0.1:5173). Si necesitas otro puerto para la interfaz, usa el mismo `WEB_PORT` en ambos comandos.
+Open [http://127.0.0.1:5173](http://127.0.0.1:5173). To use a different frontend port, pass the same `WEB_PORT` to both commands.
 
-### Pruebas
+### Tests
 
 ```sh
 make test
 ```
 
-Incluye pruebas Go con detección de carreras, migración desde versiones anteriores, integración con plugins WASI reales, análisis estático, pruebas de interfaz y compilación web. La [configuración de CI](.github/workflows/ci.yml) ejecuta estos checks y construye el servidor.
+This runs the exhaustive Go race suite, compatibility fixtures, integration tests with real WASI plugins, static analysis, frontend tests and the web build. Run it before releases and when changing security or recovery behavior.
 
-También puedes verificar la instalación independiente de Documentos con datos temporales:
+Pushes and pull requests use a smaller [CI profile](.github/workflows/ci.yml):
+
+- `make test-ci` runs fast core units with race detection; selected login, session, authorization and concurrency tests; and real encrypted-backup, Documents-plugin and Local/S3 flows. The expensive application flows run without race instrumentation.
+- `make test-web` keeps all frontend tests and the web build in a separate job.
+- The backend job also builds the production executable.
+
+The [Full test suite workflow](.github/workflows/full-tests.yml) is manual: choose **Actions → Full test suite → Run workflow** for exhaustive coverage. Detailed legacy, scheduling, recovery and additional account/plugin scenarios remain there and in `make test`; they are not all repeated on every push.
+
+For local checks, use `make test-ci`, `make test-go`, `make test-wasi` or `make test-web`. Tests keep production password-hashing and backup-encryption costs. The exhaustive race suite can take several minutes, with a configurable 20-minute timeout per test binary (`GO_TEST_TIMEOUT`).
+
+You can also verify independent Documents installation with temporary data:
 
 ```sh
 python3 scripts/verify-documents-plugin.py \
@@ -173,13 +191,13 @@ python3 scripts/verify-documents-plugin.py \
   --package ./bin/plugins/documents.hap
 ```
 
-Este recorrido comprueba instalación sin modificar el ejecutable, carga, búsqueda, descarga, copia cifrada y reinicio.
+This checks installation without modifying the executable, upload, search, download, encrypted backup and restart.
 
-## Despliegue
+## Deployment
 
-La instalación actual se construye desde el código fuente. Ejecuta **un solo proceso por directorio de datos** y conserva ese directorio en almacenamiento persistente.
+The current installation is built from source. Run **one process per data directory** and keep that directory on persistent storage.
 
-Para publicar la aplicación detrás de un proxy inverso con HTTPS:
+To serve the application behind an HTTPS reverse proxy:
 
 ```sh
 ./bin/homeatlas \
@@ -188,28 +206,28 @@ Para publicar la aplicación detrás de un proxy inverso con HTTPS:
   -data ./data
 ```
 
-Configura el proxy para conservar el encabezado `Host`. HTTPS es obligatorio fuera de loopback; `-public-url` debe coincidir con el origen que utiliza el navegador.
+Configure the proxy to preserve the `Host` header. HTTPS is required outside loopback; `-public-url` must match the origin used by the browser.
 
-SMTP es opcional y está desactivado por defecto. Consulta [.env.example](.env.example): HomeAtlas lee variables del proceso, no carga archivos `.env` automáticamente.
+SMTP is optional and disabled by default. See [.env.example](.env.example): HomeAtlas reads process environment variables and does not load `.env` files automatically.
 
 ## Roadmap
 
-- Distribución y despliegue reproducibles en más entornos.
-- Evolución y estabilización del contrato público de plugins.
-- Actualización y desinstalación de paquetes desde flujos administrados.
-- Módulos de inventario y garantías.
-- OCR e IA opcional sobre información autorizada.
+- Reproducible distribution and deployment across more environments.
+- Evolution and stabilization of the public plugin contract.
+- Managed package updates and uninstallation.
+- Inventory and warranty modules.
+- Optional OCR and AI over authorized information.
 
-El runtime y los plugins siguen siendo experimentales. Las pruebas de S3 utilizan un servidor TLS de ensayo; verifica la conexión con tu proveedor antes de usarlo. Las mediciones históricas de memoria no certifican todas las cargas ni una instalación mínima universal.
+The runtime and plugins remain experimental. S3 tests use a local TLS test server; verify connectivity with your provider before using it. Historical memory measurements do not certify every workload or a universal minimum deployment size.
 
-## Contribuir
+## Contributing
 
-Son bienvenidos los reportes de errores, las mejoras de documentación y las contribuciones de código. Incluye pasos para reproducir el problema y describe el comportamiento esperado; para cambios amplios, explica primero el alcance de la propuesta.
+Bug reports, documentation improvements and code contributions are welcome. Include reproduction steps and describe the expected behavior; for larger changes, explain the proposed scope first.
 
-Antes de enviar un cambio, ejecuta `make test`. Conserva la compatibilidad de datos y permisos, añade pruebas para comportamientos nuevos y utiliza los componentes compartidos de la interfaz. No incluyas credenciales, datos de hogares, cachés ni artefactos de compilación.
+Run `make test` before submitting changes. Preserve data and permission compatibility, add tests for new behavior and use shared interface components. Do not commit credentials, household data, caches or build artifacts.
 
-## Licencia
+## License
 
-La licencia de HomeAtlas está pendiente de definir. Este repositorio todavía no incluye un archivo `LICENSE` del proyecto.
+HomeAtlas's license has not yet been selected. This repository does not currently include a project-level `LICENSE` file.
 
-Las dependencias y los componentes de terceros conservan sus propias licencias; la de los componentes shadcn-vue se encuentra [junto a su código](apps/web/src/components/ui/LICENSE.shadcn-vue).
+Dependencies and third-party components retain their own licenses; the shadcn-vue component license is included [alongside its source](apps/web/src/components/ui/LICENSE.shadcn-vue).

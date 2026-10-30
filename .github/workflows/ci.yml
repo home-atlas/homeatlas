@@ -1,4 +1,4 @@
-name: Verify foundation
+name: CI
 
 on:
   push:
@@ -7,19 +7,42 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  verify:
+  web:
+    name: Web tests and build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
       - run: npm --prefix apps/web ci
-      - run: make test
+      - run: make test-web
+
+  verify:
+    name: Critical Go tests and production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Critical security and data flows
+        run: make test-ci
+      # Build assets here too so the production binary embeds the verified sources.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm --prefix apps/web ci
+      - run: npm --prefix apps/web run build
       - run: go build -tags production -o bin/homeatlas ./cmd/homeatlas
