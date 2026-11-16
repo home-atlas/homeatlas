@@ -149,6 +149,12 @@ sdk/pluginstorage/    Experimental WASI storage SDK
 scripts/              Packaging, verification and measurement tools
 ```
 
+## Proxmox lab deployment
+
+[Release](.github/workflows/release.yml) publishes a Linux amd64 executable, Documents package and SHA-256 checksums for `v*` tags after the full test suite, then automatically calls [Deploy lab](.github/workflows/deploy-lab.yml) for that exact tag through Tailscale SSH. This includes lab prereleases. Configure the `lab` environment to allow `v*` tags without required reviewers or wait timers, and set `LAB_HOST`, `TS_CLIENT_ID` and `TS_AUDIENCE`. Tailscale trusts the GitHub OIDC identity for this repository's `lab` environment; no permanent Tailscale secret is stored in GitHub. Failed tests, builds or publication skip deployment; manually publishing a release does not trigger it.
+
+The VM provisioning script and systemd service live in [deploy/proxmox](deploy/proxmox). HomeAtlas listens on `127.0.0.1:8090`; Tailscale Serve supplies private HTTPS on port 8443. Deployment retains a stopped local data copy and restores it with the previous executable if startup fails. This copy is sensitive and does not include remote S3 objects; keep encrypted application backups outside the VM.
+
 ## Development
 
 Install dependencies with `make install`, then run these commands in two terminals:
@@ -214,7 +220,7 @@ SMTP is optional and disabled by default. See [.env.example](.env.example): Home
 
 - Reproducible distribution and deployment across more environments.
 - Evolution and stabilization of the public plugin contract.
-- Managed package updates and uninstallation.
+- In-app plugin installation, managed package updates and uninstallation.
 - Inventory and warranty modules.
 - Optional OCR and AI over authorized information.
 

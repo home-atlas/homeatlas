@@ -1,0 +1,49 @@
+name: Deploy lab
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag published after validation
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-lab
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: lab
+    env:
+      LAB_HOST: ${{ vars.LAB_HOST }}
+    steps:
+      - name: Validate configuration and download release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$LAB_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*\.ts\.net$ ]] || { echo 'Set lab variable LAB_HOST to the VM Tailscale FQDN'; exit 1; }
+          [[ "$RELEASE_TAG" =~ ^v[0-9][a-zA-Z0-9._-]*$ ]] || { echo 'Invalid release tag'; exit 1; }
+          mkdir dist
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir dist \
+            --pattern homeatlas --pattern documents.hap --pattern SHA256SUMS
+          (cd dist && sha256sum --check --strict SHA256SUMS)
+          tar -czf deploy.tgz -C dist homeatlas documents.hap SHA256SUMS
+      - uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ vars.TS_CLIENT_ID }}
+          audience: ${{ vars.TS_AUDIENCE }}
+          tags: tag:homeatlas-ci
+          ping: ${{ vars.LAB_HOST }}
+      - name: Deploy over Tailscale SSH
+        run: |
+          tailscale ssh "deploy@$LAB_HOST" 'sudo -n /usr/local/sbin/homeatlas-deploy' < deploy.tgz
+      - name: Verify private HTTPS endpoint
+        run: curl --fail --silent --show-error --retry 5 --retry-delay 2 --retry-all-errors --max-time 10 "https://$LAB_HOST:8443/api/health"

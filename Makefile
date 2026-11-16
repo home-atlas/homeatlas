@@ -1,6 +1,6 @@
 WEB_PORT ?= 5173
 
-.PHONY: install dev-api dev-web build test test-go test-wasi test-web test-ci
+.PHONY: install dev-api dev-web build test test-go test-wasi test-web test-ci test-deploy
 
 install:
 	go mod download
@@ -18,7 +18,10 @@ build:
 
 GO_TEST_TIMEOUT ?= 20m
 
-test: test-go test-wasi test-web
+test: test-go test-wasi test-web test-deploy
+
+test-deploy:
+	python3 -m unittest discover -s deploy/proxmox -p 'test_*.py'
 
 test-go:
 	go test -race -timeout=$(GO_TEST_TIMEOUT) ./...
