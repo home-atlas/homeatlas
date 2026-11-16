@@ -12,6 +12,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  deploy-tools:
+    name: Deployment safety checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test-deploy
+      - run: bash -n deploy/proxmox/install.sh
+      - run: shellcheck deploy/proxmox/install.sh
+      - run: sudo install -D /usr/bin/true /opt/homeatlas/current/homeatlas
+      - run: systemd-analyze verify deploy/proxmox/homeatlas.service
+
   web:
     name: Web tests and build
     runs-on: ubuntu-latest
