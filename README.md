@@ -151,7 +151,7 @@ scripts/              Packaging, verification and measurement tools
 
 ## Proxmox lab deployment
 
-[Release](.github/workflows/release.yml) publishes a Linux amd64 executable, Documents package and SHA-256 checksums for `v*` tags after the full test suite, then automatically calls [Deploy lab](.github/workflows/deploy-lab.yml) for that exact tag through Tailscale SSH. This includes lab prereleases. Configure the `lab` environment to allow `v*` tags without required reviewers or wait timers, and set `LAB_HOST`, `TS_CLIENT_ID` and `TS_AUDIENCE`. Tailscale trusts the GitHub OIDC identity for this repository's `lab` environment; no permanent Tailscale secret is stored in GitHub. Failed tests, builds or publication skip deployment; manually publishing a release does not trigger it.
+[Release](.github/workflows/release.yml) runs critical Go checks, all frontend tests and deployment tests before publishing a Linux amd64 executable, Documents package and SHA-256 checksums for `v*` tags. It then automatically calls [Deploy lab](.github/workflows/deploy-lab.yml) for that exact tag through Tailscale SSH. This includes lab prereleases. Configure the `lab` environment to allow `v*` tags without required reviewers or wait timers, and set `LAB_HOST`, `TS_CLIENT_ID` and `TS_AUDIENCE`. Tailscale trusts the GitHub OIDC identity for this repository's `lab` environment; no permanent Tailscale secret is stored in GitHub. Failed tests, builds or publication skip deployment; manually publishing a release does not trigger it.
 
 The VM provisioning script and systemd service live in [deploy/proxmox](deploy/proxmox). HomeAtlas listens on `127.0.0.1:8090`; Tailscale Serve supplies private HTTPS on port 8443. Deployment retains a stopped local data copy and restores it with the previous executable if startup fails. This copy is sensitive and does not include remote S3 objects; keep encrypted application backups outside the VM.
 
@@ -177,7 +177,7 @@ Open [http://127.0.0.1:5173](http://127.0.0.1:5173). To use a different frontend
 make test
 ```
 
-This runs the exhaustive Go race suite, compatibility fixtures, integration tests with real WASI plugins, static analysis, frontend tests and the web build. Run it before releases and when changing security or recovery behavior.
+This runs the exhaustive Go race suite, compatibility fixtures, integration tests with real WASI plugins, static analysis, frontend tests and the web build. Run it when changing security or recovery behavior. Releases use `make test-ci test-web test-deploy`; the exhaustive suite remains available through the manual workflow below.
 
 Pushes and pull requests use a smaller [CI profile](.github/workflows/ci.yml):
 
