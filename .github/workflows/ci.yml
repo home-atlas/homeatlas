@@ -1,7 +1,9 @@
-name: CI
+name: CI and release
 
 on:
   push:
+    branches: [main]
+    tags: ['v*']
   pull_request:
 
 permissions:
@@ -9,7 +11,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
 
 jobs:
   deploy-tools:
@@ -57,4 +59,59 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
       - run: npm --prefix apps/web ci
       - run: npm --prefix apps/web run build
-      - run: go build -tags production -o bin/homeatlas ./cmd/homeatlas
+      - name: Build Linux amd64 executable
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: go build -tags production -o bin/homeatlas ./cmd/homeatlas
+      - name: Package release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          mkdir -p dist
+          make plugin-documents PACKAGE_OUT=dist/documents.hap
+          cp bin/homeatlas dist/homeatlas
+          cd dist
+          sha256sum homeatlas documents.hap > SHA256SUMS
+      - uses: actions/upload-artifact@v7
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: homeatlas-release
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    needs: [deploy-tools, web, verify]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: homeatlas-release
+          path: dist
+      - name: Verify release assets
+        working-directory: dist
+        run: sha256sum --check --strict SHA256SUMS
+      - name: Publish release (tags containing a dash are prereleases)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          args=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then args+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --title "$RELEASE_TAG" --generate-notes "${args[@]}" \
+            dist/homeatlas dist/documents.hap dist/SHA256SUMS
+
+  deploy:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/deploy-lab.yml
+    with:
+      tag: ${{ github.ref_name }}
