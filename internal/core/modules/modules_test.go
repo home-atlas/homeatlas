@@ -48,7 +48,7 @@ func TestRegistryRejectsCoreNamespaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"verify-email", "activate-access", "forgot-password", "home", "api", "core", "identity", "schema", "module", "plugin", "backups", "plugins", "plugin-files"} {
+	for _, id := range []string{"verify-email", "activate-access", "forgot-password", "home", "api", "assets", "core", "identity", "schema", "module", "plugin", "backups", "plugins", "plugin-files"} {
 		if err := r.Register(context.Background(), dependent{id: id}); err == nil {
 			t.Errorf("registered reserved ID %s", id)
 		}

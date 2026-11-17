@@ -86,7 +86,7 @@ func New(ctx context.Context, db *sql.DB) (*Registry, error) {
 
 var identifier = regexp.MustCompile(`^[a-z][a-z0-9-]{0,47}$`)
 var method = regexp.MustCompile(`^[A-Z]+$`)
-var reserved = map[string]bool{"api": true, "core": true, "identity": true, "schema": true, "module": true, "plugin": true, "backups": true, "plugins": true, "plugin-files": true, "modules": true, "health": true, "search": true, "auth": true, "setup": true, "household": true, "invitations": true, "settings": true, "family": true, "join": true, "login": true, "recover": true, "verify-email": true, "activate-access": true, "forgot-password": true, "home": true}
+var reserved = map[string]bool{"api": true, "assets": true, "core": true, "identity": true, "schema": true, "module": true, "plugin": true, "backups": true, "plugins": true, "plugin-files": true, "modules": true, "health": true, "search": true, "auth": true, "setup": true, "household": true, "invitations": true, "settings": true, "family": true, "join": true, "login": true, "recover": true, "verify-email": true, "activate-access": true, "forgot-password": true, "home": true}
 
 // ValidID shares the Core's namespace boundary with package installation.
 func ValidID(id string) bool { return identifier.MatchString(id) && !reserved[id] }

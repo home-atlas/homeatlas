@@ -154,7 +154,7 @@ func TestReservedCollectionIDsRejectedBeforeInstallation(t *testing.T) {
 	if err := json.Unmarshal(raw, &documents); err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"verify-email", "activate-access", "forgot-password", "home", "api"} {
+	for _, id := range []string{"verify-email", "activate-access", "forgot-password", "home", "api", "assets"} {
 		t.Run(id, func(t *testing.T) {
 			data := packageBytes(t, command(`{"text":"ok"}`, false), func(m *Manifest) {
 				m.ID = id
