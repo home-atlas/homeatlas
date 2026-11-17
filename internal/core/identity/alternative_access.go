@@ -4,16 +4,15 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
 	"errors"
 	"fmt"
-	"net/http"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/home-atlas/homeatlas/internal/core/access"
-	"github.com/home-atlas/homeatlas/internal/core/modules"
+	"github.com/home-atlas/homeatlas/internal/core/fault"
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
 )
 
 var usernamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{2,39}$`)
@@ -37,75 +36,52 @@ func optionalEmail(value string) (string, bool) {
 	}
 	return normalizeEmail(value)
 }
-func nullableEmail(value string) any {
+func nullableEmail(value string) *string {
 	if value == "" {
 		return nil
 	}
-	return value
-}
-func (s *Service) pinCookieName() string {
-	if s.secure {
-		return "__Host-homeatlas_pin_device"
-	}
-	return "homeatlas_pin_device"
-}
-func (s *Service) setPINCookie(w http.ResponseWriter, token string) {
-	http.SetCookie(w, &http.Cookie{Name: s.pinCookieName(), Value: token, Path: "/", HttpOnly: true, Secure: s.secure, SameSite: http.SameSiteStrictMode, MaxAge: int(pinDeviceLifetime.Seconds()), Expires: time.Now().Add(pinDeviceLifetime)})
-}
-func (s *Service) mountAlternativeAccess(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/household/assisted-members", s.createAssistedMember)
-	mux.HandleFunc("POST /api/household/members/{user}/enrollment", s.renewAssistedEnrollment)
-	mux.HandleFunc("POST /api/assisted/inspect", s.inspectAssistedEnrollment)
-	mux.HandleFunc("POST /api/assisted/complete", s.completeAssistedEnrollment)
-	mux.HandleFunc("GET /api/auth/pin", s.pinStatus)
-	mux.HandleFunc("POST /api/auth/pin/login", s.pinLogin)
-	mux.HandleFunc("POST /api/auth/pin/device", s.registerPINDevice)
-	mux.HandleFunc("GET /api/auth/access", s.accessSettings)
-	mux.HandleFunc("PATCH /api/auth/access", s.updateUsername)
-	mux.HandleFunc("DELETE /api/auth/pin/devices/{id}", s.revokePINDevice)
+	return &value
 }
 
 // Fresh password proof is rechecked in the committing transaction, including session validity.
-func (s *Service) passwordProof(w http.ResponseWriter, r *http.Request, password string) (string, string, bool) {
-	p, ok := access.Current(r.Context())
+func (s *Application) passwordProof(ctx context.Context, client Client, password string) (string, string, error) {
+	p, ok := access.Current(ctx)
 	if !ok {
-		fail(w, 401, "authentication_required")
-		return "", "", false
+		return "", "", fault.New(fault.Unauthenticated, "authentication_required")
 	}
-	if !s.limit(w, r, "access:"+p.UserID) || !s.acquire(w) {
-		return "", "", false
+	if err := s.limit(ctx, client, "access:"+p.UserID); err != nil {
+		return "", "", err
+	}
+	if err := s.acquire(); err != nil {
+		return "", "", err
 	}
 	defer func() { <-s.work }()
 	var stored string
-	if err := s.db.QueryRowContext(r.Context(), "SELECT password_hash FROM identity_users WHERE id=?", p.UserID).Scan(&stored); err != nil {
-		fail(w, 503, "access_unavailable")
-		return "", "", false
+	if err := s.store.readPasswordProof(ctx, nil, p.UserID, &stored); err != nil {
+		return "", "", fault.New(fault.Unavailable, "access_unavailable")
 	}
 	if len(password) > 512 || !verifyPassword(password, stored) {
-		fail(w, 403, "password_confirmation_required")
-		return "", "", false
+		return "", "", fault.New(fault.Denied, "password_confirmation_required")
 	}
-	cookie, err := r.Cookie(s.cookieName)
-	if err != nil {
-		fail(w, 401, "authentication_required")
-		return "", "", false
+	if !client.HasSession {
+		return "", "", fault.New(fault.Unauthenticated, "authentication_required")
 	}
-	return stored, cookie.Value, true
+	return stored, client.SessionToken, nil
 }
-func (s *Service) proofCurrent(r *http.Request, tx *sql.Tx, stored, token string) bool {
-	p, ok := access.Current(r.Context())
+func (s *Application) proofCurrent(ctx context.Context, tx unitofwork.Transaction, stored, token string) bool {
+	p, ok := access.Current(ctx)
 	if !ok {
 		return false
 	}
 	digest := sha256.Sum256([]byte(token))
 	now := time.Now().Unix()
 	var valid bool
-	err := tx.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM identity_sessions s JOIN identity_users u ON u.id=s.user_id JOIN identity_member_ids m ON m.user_id=s.user_id AND m.household_id=s.household_id WHERE s.token_hash=? AND s.user_id=? AND s.household_id=? AND s.expires_at>? AND s.last_seen>? AND u.password_hash=? AND m.id=?)`, digest[:], p.UserID, p.HouseholdID, now, now-int64(sessionIdle.Seconds()), stored, p.MembershipID).Scan(&valid)
+	err := s.store.isPasswordProofCurrent(ctx, tx, digest[:], p.UserID, p.HouseholdID, now, now-int64(sessionIdle.Seconds()), stored, p.MembershipID, &valid)
 	return err == nil && valid
 }
 func pinRole(role string) bool { return role == "member" || role == "restricted" || role == "guest" }
 
-type assistedInput struct {
+type AssistedInput struct {
 	Name        string   `json:"name"`
 	Username    string   `json:"username"`
 	Email       string   `json:"email"`
@@ -114,270 +90,233 @@ type assistedInput struct {
 	Password    string   `json:"password"`
 }
 
-func (s *Service) createAssistedMember(w http.ResponseWriter, r *http.Request) {
-	var in assistedInput
-	if !decode(w, r, &in) {
-		return
-	}
+func (s *Application) CreateAssistedMember(ctx context.Context, client Client, in AssistedInput) (Result, error) {
+	result := Result{}
+
 	in.Name = strings.TrimSpace(in.Name)
 	username, valid := normalizeUsername(in.Username)
 	email, emailOK := optionalEmail(in.Email)
 	if !valid || !emailOK || !validText(in.Name, 80) || !pinRole(in.Role) {
-		fail(w, 400, "invalid_assisted_member")
-		return
+		return result, fault.New(fault.Invalid, "invalid_assisted_member")
 	}
-	proof, sessionToken, ok := s.passwordProof(w, r, in.Password)
-	if !ok {
-		return
-	}
-	tx, err := s.db.BeginTx(r.Context(), nil)
+	proof, sessionToken, err := s.passwordProof(ctx, client, in.Password)
 	if err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, err
+	}
+	tx, err := s.store.Begin(ctx)
+	if err != nil {
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
 	defer tx.Rollback()
-	actor, ok := s.actor(w, r, tx)
-	if !ok {
-		return
+	actor, err := s.actor(ctx, tx)
+	if err != nil {
+		return result, err
 	}
-	if !s.proofCurrent(r, tx, proof, sessionToken) {
-		fail(w, 401, "authentication_required")
-		return
+	if !s.proofCurrent(ctx, tx, proof, sessionToken) {
+		return result, fault.New(fault.Unauthenticated, "authentication_required")
 	}
 	permissions, ok := s.grant(actor, in.Role, in.Permissions)
 	if !ok {
-		fail(w, 403, "invalid_grant")
-		return
+		return result, fault.New(fault.Denied, "invalid_grant")
 	}
 	// PIN accounts never receive installation or household administration capabilities.
 	for _, p := range permissions {
 		if strings.HasPrefix(p, "household.") {
-			fail(w, 403, "invalid_grant")
-			return
+			return result, fault.New(fault.Denied, "invalid_grant")
 		}
 	}
 	var exists bool
-	err = tx.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM identity_users WHERE username=? OR email=?)", username, nullableEmail(email)).Scan(&exists)
+	err = s.store.assistedAccountExists(ctx, tx, username, nullableEmail(email), &exists)
 	if err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
 	if exists {
-		fail(w, 409, "account_identifier_taken")
-		return
+		return result, fault.New(fault.Conflict, "account_identifier_taken")
 	}
 	user := rand.Text()
-	p, _ := access.Current(r.Context())
-	if _, err = tx.ExecContext(r.Context(), "INSERT INTO identity_users(id,name,email,password_hash,username,assisted) VALUES(?,?,?,'!',?,1)", user, in.Name, nullableEmail(email), username); err != nil {
-		fail(w, 409, "account_identifier_taken")
-		return
+	p, _ := access.Current(ctx)
+	if _, err = s.store.insertAssistedAccount(ctx, tx, user, in.Name, nullableEmail(email), username); err != nil {
+		return result, fault.New(fault.Conflict, "account_identifier_taken")
 	}
-	if _, err = tx.ExecContext(r.Context(), "INSERT INTO identity_memberships(user_id,household_id,role) VALUES(?,?,?)", user, p.HouseholdID, in.Role); err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+	if _, err = s.store.insertAssistedMembership(ctx, tx, user, p.HouseholdID, in.Role); err != nil {
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
-	if err = setPermissions(r.Context(), tx, p.HouseholdID, user, permissions); err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+	if err = s.setPermissions(ctx, tx, p.HouseholdID, user, permissions); err != nil {
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
-	s.issueAssistedEnrollment(w, r, tx, user, actor, 201)
+	return s.issueAssistedEnrollment(ctx, client, tx, user, actor)
 }
-func (s *Service) issueAssistedEnrollment(w http.ResponseWriter, r *http.Request, tx *sql.Tx, user string, actor access.Member, status int) {
-	p, _ := access.Current(r.Context())
+func (s *Application) issueAssistedEnrollment(ctx context.Context, client Client, tx unitofwork.Transaction, user string, actor access.Member) (Result, error) {
+	result := Result{}
+
+	p, _ := access.Current(ctx)
 	token := randomCode()
 	digest, _ := tokenDigest(token)
 	expires := time.Now().Add(recoveryLifetime)
-	_, err := tx.ExecContext(r.Context(), `INSERT INTO identity_assisted_enrollments(user_id,household_id,token_hash,issuer_id,issuer_member_id,expires_at) VALUES(?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET household_id=excluded.household_id,token_hash=excluded.token_hash,issuer_id=excluded.issuer_id,issuer_member_id=excluded.issuer_member_id,expires_at=excluded.expires_at`, user, p.HouseholdID, digest, actor.ID, actor.MembershipID, expires.Unix())
+	_, err := s.store.saveAssistedEnrollment(ctx, tx, user, p.HouseholdID, digest, actor.ID, actor.MembershipID, expires.Unix())
 	if err == nil {
-		_, err = tx.ExecContext(r.Context(), `INSERT INTO identity_access_events(id,user_id,household_id,actor_id,action,created_at) VALUES(?,?,?,?,'enrollment_issued',?)`, rand.Text(), user, p.HouseholdID, actor.ID, time.Now().Unix())
+		_, err = s.store.recordEnrollmentIssued(ctx, tx, rand.Text(), user, p.HouseholdID, actor.ID, time.Now().Unix())
 	}
 	if err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
 	if err = tx.Commit(); err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
-	modules.JSON(w, status, map[string]any{"url": s.origin.String() + "/activate-access#" + token, "expiresAt": expires, "userId": user})
+	result.Data = map[string]any{"url": s.origin.String() + "/activate-access#" + token, "expiresAt": expires, "userId": user}
+
+	return result, nil
 }
-func (s *Service) renewAssistedEnrollment(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		Password string `json:"password"`
-	}
-	if !decode(w, r, &in) {
-		return
-	}
-	proof, sessionToken, ok := s.passwordProof(w, r, in.Password)
-	if !ok {
-		return
-	}
-	tx, err := s.db.BeginTx(r.Context(), nil)
+func (s *Application) RenewAssistedEnrollment(ctx context.Context, client Client, targetUser string, in RenewAssistedEnrollmentInput) (Result, error) {
+	result := Result{}
+
+	proof, sessionToken, err := s.passwordProof(ctx, client, in.Password)
 	if err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, err
+	}
+	tx, err := s.store.Begin(ctx)
+	if err != nil {
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
 	defer tx.Rollback()
-	actor, ok := s.actor(w, r, tx)
-	if !ok {
-		return
-	}
-	if !s.proofCurrent(r, tx, proof, sessionToken) {
-		fail(w, 401, "authentication_required")
-		return
-	}
-	p, _ := access.Current(r.Context())
-	target, err := s.Member(r.Context(), tx, p.HouseholdID, r.PathValue("user"))
+	actor, err := s.actor(ctx, tx)
 	if err != nil {
-		fail(w, 404, "member_not_found")
-		return
+		return result, err
+	}
+	if !s.proofCurrent(ctx, tx, proof, sessionToken) {
+		return result, fault.New(fault.Unauthenticated, "authentication_required")
+	}
+	p, _ := access.Current(ctx)
+	target, err := s.Member(ctx, tx, p.HouseholdID, targetUser)
+	if err != nil {
+		return result, fault.New(fault.Missing, "member_not_found")
 	}
 	var assisted bool
-	err = tx.QueryRowContext(r.Context(), "SELECT assisted=1 AND password_hash='!' FROM identity_users WHERE id=?", target.ID).Scan(&assisted)
+	err = s.store.isAssistedAccount(ctx, tx, target.ID, &assisted)
 	if err != nil || !assisted || !editable(actor, target) || !pinRole(target.Role) {
-		fail(w, 403, "protected_member")
-		return
+		return result, fault.New(fault.Denied, "protected_member")
 	}
 	if _, allowed := s.grant(actor, target.Role, normalizedPermissions(target.Permissions)); !allowed {
-		fail(w, 403, "invalid_grant")
-		return
+		return result, fault.New(fault.Denied, "invalid_grant")
 	}
-	s.issueAssistedEnrollment(w, r, tx, target.ID, actor, 200)
+	return s.issueAssistedEnrollment(ctx, client, tx, target.ID, actor)
 }
 
 type enrollment struct{ User, Household, Name, Username, Issuer, IssuerMember string }
 
-func (s *Service) enrollment(r *http.Request, tx *sql.Tx, token string) (enrollment, error) {
+func (s *Application) enrollment(ctx context.Context, tx unitofwork.Transaction, token string) (enrollment, error) {
 	var e enrollment
 	digest, ok := tokenDigest(token)
 	if !ok {
-		return e, sql.ErrNoRows
+		return e, unitofwork.ErrNotFound
 	}
-	err := tx.QueryRowContext(r.Context(), `SELECT e.user_id,e.household_id,u.name,u.username,e.issuer_id,e.issuer_member_id FROM identity_assisted_enrollments e JOIN identity_users u ON u.id=e.user_id JOIN identity_memberships m ON m.user_id=e.user_id AND m.household_id=e.household_id JOIN identity_member_ids i ON i.user_id=e.issuer_id AND i.household_id=e.household_id AND i.id=e.issuer_member_id WHERE e.token_hash=? AND e.expires_at>? AND u.assisted=1 AND u.password_hash='!' AND m.role IN ('member','restricted','guest') AND NOT EXISTS(SELECT 1 FROM identity_permissions p WHERE p.user_id=m.user_id AND p.household_id=m.household_id AND p.capability LIKE 'household.%')`, digest, time.Now().Unix()).Scan(&e.User, &e.Household, &e.Name, &e.Username, &e.Issuer, &e.IssuerMember)
+	err := s.store.readEnrollment(ctx, tx, digest, time.Now().Unix(), &e.User, &e.Household, &e.Name, &e.Username, &e.Issuer, &e.IssuerMember)
 	if err != nil {
 		return e, err
 	}
-	actor, err := s.Member(r.Context(), tx, e.Household, e.Issuer)
+	actor, err := s.Member(ctx, tx, e.Household, e.Issuer)
 	if err != nil || !manager(actor) || actor.MembershipID != e.IssuerMember {
-		return e, sql.ErrNoRows
+		return e, unitofwork.ErrNotFound
 	}
-	target, err := s.Member(r.Context(), tx, e.Household, e.User)
+	target, err := s.Member(ctx, tx, e.Household, e.User)
 	if err != nil {
 		return e, err
 	}
 	if _, ok := s.grant(actor, target.Role, normalizedPermissions(target.Permissions)); !ok {
-		return e, sql.ErrNoRows
+		return e, unitofwork.ErrNotFound
 	}
 	return e, nil
 }
-func (s *Service) inspectAssistedEnrollment(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		Token string `json:"token"`
-	}
-	if !decode(w, r, &in) {
-		return
-	}
+func (s *Application) InspectAssistedEnrollment(ctx context.Context, client Client, in InspectAssistedEnrollmentInput) (Result, error) {
+	result := Result{}
+
 	digest, _ := tokenDigest(in.Token)
-	if !s.limit(w, r, "enrollment-inspect:"+fmt.Sprintf("%x", digest)) {
-		return
+	if err := s.limit(ctx, client, "enrollment-inspect:"+fmt.Sprintf("%x", digest)); err != nil {
+		return result, err
 	}
-	tx, err := s.db.BeginTx(r.Context(), nil)
+	tx, err := s.store.Begin(ctx)
 	if err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
 	defer tx.Rollback()
-	e, err := s.enrollment(r, tx, in.Token)
+	e, err := s.enrollment(ctx, tx, in.Token)
 	if err != nil {
-		fail(w, 410, "enrollment_unavailable")
-		return
+		return result, fault.New(fault.Expired, "enrollment_unavailable")
 	}
-	modules.JSON(w, 200, map[string]string{"name": e.Name, "username": e.Username})
+	result.Data = map[string]string{"name": e.Name, "username": e.Username}
+
+	return result, nil
 }
-func (s *Service) completeAssistedEnrollment(w http.ResponseWriter, r *http.Request) {
-	if _, ok := access.Current(r.Context()); ok {
-		fail(w, 409, "sign_out_before_enrollment")
-		return
+func (s *Application) CompleteAssistedEnrollment(ctx context.Context, client Client, in CompleteAssistedEnrollmentInput) (Result, error) {
+	result := Result{}
+
+	if _, ok := access.Current(ctx); ok {
+		return result, fault.New(fault.Conflict, "sign_out_before_enrollment")
 	}
-	var in struct {
-		Token      string `json:"token"`
-		PIN        string `json:"pin"`
-		DeviceName string `json:"deviceName"`
-	}
-	if !decode(w, r, &in) {
-		return
-	}
+
 	if !pinPattern.MatchString(in.PIN) || !validText(strings.TrimSpace(in.DeviceName), 80) {
-		fail(w, 400, "invalid_pin")
-		return
+		return result, fault.New(fault.Invalid, "invalid_pin")
 	}
 	digest, _ := tokenDigest(in.Token)
-	if !s.limit(w, r, "enrollment-complete:"+fmt.Sprintf("%x", digest)) || !s.acquire(w) {
-		return
+	if err := s.limit(ctx, client, "enrollment-complete:"+fmt.Sprintf("%x", digest)); err != nil {
+		return result, err
+	}
+	if err := s.acquire(); err != nil {
+		return result, err
 	}
 	defer func() { <-s.work }()
 	// Reject invalid links before doing password derivation, then check again before commit.
-	check, err := s.db.BeginTx(r.Context(), nil)
+	check, err := s.store.Begin(ctx)
 	if err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
-	_, err = s.enrollment(r, check, in.Token)
+	_, err = s.enrollment(ctx, check, in.Token)
 	check.Rollback()
 	if err != nil {
-		fail(w, 410, "enrollment_unavailable")
-		return
+		return result, fault.New(fault.Expired, "enrollment_unavailable")
 	}
 	hash, err := hashPassword(in.PIN)
 	if err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
-	tx, err := s.db.BeginTx(r.Context(), nil)
+	tx, err := s.store.Begin(ctx)
 	if err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
 	defer tx.Rollback()
-	e, err := s.enrollment(r, tx, in.Token)
+	e, err := s.enrollment(ctx, tx, in.Token)
 	if err != nil {
-		fail(w, 410, "enrollment_unavailable")
-		return
+		return result, fault.New(fault.Expired, "enrollment_unavailable")
 	}
 	// A replacement activates only this new device and signs out the lost/old ones.
-	for _, q := range []string{"DELETE FROM identity_pin_devices WHERE user_id=?", "DELETE FROM identity_sessions WHERE user_id=?", "DELETE FROM identity_assisted_enrollments WHERE user_id=?"} {
-		if _, err = tx.ExecContext(r.Context(), q, e.User); err != nil {
-			fail(w, 503, "access_unavailable")
-			return
-		}
+	if err := s.store.revokeAssistedCredentials(ctx, tx, e.User); err != nil {
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
-	device, err := s.insertPINDevice(r, tx, e.User, e.Household, hash, in.DeviceName)
+	device, err := s.insertPINDevice(ctx, client, tx, e.User, e.Household, hash, in.DeviceName)
 	if err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
-	if _, err = tx.ExecContext(r.Context(), `INSERT INTO identity_access_events(id,user_id,household_id,actor_id,action,created_at) VALUES(?,?,?,?,'device_activated',?)`, rand.Text(), e.User, e.Household, e.Issuer, time.Now().Unix()); err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+	if _, err = s.store.recordDeviceActivated(ctx, tx, rand.Text(), e.User, e.Household, e.Issuer, time.Now().Unix()); err != nil {
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
 	// Do not silently switch an administrator's session to the assisted member.
 	if err = tx.Commit(); err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
-	s.setPINCookie(w, device)
-	w.WriteHeader(http.StatusNoContent)
+	result.DeviceToken = device
+
+	return result, nil
 }
-func (s *Service) insertPINDevice(r *http.Request, tx *sql.Tx, user, household, hash, name string) (string, error) {
+func (s *Application) insertPINDevice(ctx context.Context, client Client, tx unitofwork.Transaction, user, household, hash, name string) (string, error) {
 	// Each browser holds a single device binding; replacing it also revokes the old binding.
-	if c, err := r.Cookie(s.pinCookieName()); err == nil {
-		digest := sha256.Sum256([]byte(c.Value))
-		if _, err = tx.ExecContext(r.Context(), "DELETE FROM identity_pin_devices WHERE token_hash=?", digest[:]); err != nil {
+	if client.HasDevice {
+		digest := sha256.Sum256([]byte(client.DeviceToken))
+		if _, err := s.store.deletePreviousPINBinding(ctx, tx, digest[:]); err != nil {
 			return "", err
 		}
 	}
 	var count int
-	if err := tx.QueryRowContext(r.Context(), "SELECT count(*) FROM identity_pin_devices WHERE user_id=?", user).Scan(&count); err != nil {
+	if err := s.store.countPINDevices(ctx, tx, user, &count); err != nil {
 		return "", err
 	}
 	if count >= 10 {
@@ -386,210 +325,166 @@ func (s *Service) insertPINDevice(r *http.Request, tx *sql.Tx, user, household, 
 	token := randomCode()
 	digest, _ := tokenDigest(token)
 	now := time.Now()
-	_, err := tx.ExecContext(r.Context(), `INSERT INTO identity_pin_devices(id,user_id,household_id,token_hash,pin_hash,name,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)`, rand.Text(), user, household, digest, hash, strings.TrimSpace(name), now.Unix(), now.Add(pinDeviceLifetime).Unix())
+	_, err := s.store.insertDeviceBinding(ctx, tx, rand.Text(), user, household, digest, hash, strings.TrimSpace(name), now.Unix(), now.Add(pinDeviceLifetime).Unix())
 	return token, err
 }
 
 type pinDevice struct{ ID, User, Household, Hash, Name, Username, PasswordHash string }
 
-func (s *Service) device(r *http.Request, tx *sql.Tx, maximumFailures int) (pinDevice, error) {
+func (s *Application) device(ctx context.Context, client Client, tx unitofwork.Transaction, maximumFailures int) (pinDevice, error) {
 	var d pinDevice
-	c, err := r.Cookie(s.pinCookieName())
-	if err != nil {
-		return d, sql.ErrNoRows
+	if !client.HasDevice {
+		return d, unitofwork.ErrNotFound
 	}
-	digest, ok := tokenDigest(c.Value)
+	digest, ok := tokenDigest(client.DeviceToken)
 	if !ok {
-		return d, sql.ErrNoRows
+		return d, unitofwork.ErrNotFound
 	}
-	var q interface {
-		QueryRowContext(context.Context, string, ...any) *sql.Row
-	} = s.db
-	if tx != nil {
-		q = tx
-	}
-	err = q.QueryRowContext(r.Context(), `SELECT d.id,d.user_id,d.household_id,d.pin_hash,u.name,COALESCE(u.username,'u-'||lower(u.id)),u.password_hash FROM identity_pin_devices d JOIN identity_users u ON u.id=d.user_id JOIN identity_memberships m ON m.user_id=d.user_id AND m.household_id=d.household_id WHERE d.token_hash=? AND d.expires_at>? AND d.failures<? AND m.role IN ('member','restricted','guest') AND NOT EXISTS(SELECT 1 FROM identity_permissions p WHERE p.user_id=m.user_id AND p.household_id=m.household_id AND p.capability LIKE 'household.%')`, digest, time.Now().Unix(), maximumFailures).Scan(&d.ID, &d.User, &d.Household, &d.Hash, &d.Name, &d.Username, &d.PasswordHash)
+	err := s.store.readDeviceBinding(ctx, tx, digest, time.Now().Unix(), maximumFailures, &d.ID, &d.User, &d.Household, &d.Hash, &d.Name, &d.Username, &d.PasswordHash)
 	return d, err
 }
-func (s *Service) pinStatus(w http.ResponseWriter, r *http.Request) {
-	d, err := s.device(r, nil, 5)
-	if err == sql.ErrNoRows {
-		modules.JSON(w, 200, map[string]bool{"available": false})
-		return
+func (s *Application) PinStatus(ctx context.Context, client Client) (Result, error) {
+	result := Result{}
+
+	d, err := s.device(ctx, client, nil, 5)
+	if errors.Is(err, unitofwork.ErrNotFound) {
+		result.Data = map[string]bool{"available": false}
+		return result, nil
 	}
 	if err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
-	modules.JSON(w, 200, map[string]any{"available": true, "name": d.Name, "username": d.Username})
+	result.Data = map[string]any{"available": true, "name": d.Name, "username": d.Username}
+
+	return result, nil
 }
-func (s *Service) pinLogin(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		PIN string `json:"pin"`
-	}
-	if !decode(w, r, &in) {
-		return
-	}
-	cookie, _ := r.Cookie(s.pinCookieName())
-	key := "unbound:" + r.RemoteAddr
-	if cookie != nil {
-		digest := sha256.Sum256([]byte(cookie.Value))
+func (s *Application) PinLogin(ctx context.Context, client Client, in PINLoginInput) (Result, error) {
+	result := Result{}
+
+	key := "unbound:" + client.RemoteAddress
+	if client.HasDevice {
+		digest := sha256.Sum256([]byte(client.DeviceToken))
 		key = fmt.Sprintf("%x", digest)
 	}
-	if !s.limit(w, r, "pin:"+key) || !s.acquire(w) {
-		return
+	if err := s.limit(ctx, client, "pin:"+key); err != nil {
+		return result, err
+	}
+	if err := s.acquire(); err != nil {
+		return result, err
 	}
 	defer func() { <-s.work }()
-	tx, err := s.db.BeginTx(r.Context(), nil)
+	tx, err := s.store.Begin(ctx)
 	if err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
-	d, err := s.device(r, tx, 5)
+	d, err := s.device(ctx, client, tx, 5)
 	if err != nil {
 		tx.Rollback()
-		if err != sql.ErrNoRows {
-			fail(w, 503, "access_unavailable")
-			return
+		if !errors.Is(err, unitofwork.ErrNotFound) {
+			return result, fault.New(fault.Unavailable, "access_unavailable")
 		}
 		verifyPassword(in.PIN, s.dummyHash)
-		fail(w, 401, "invalid_credentials")
-		return
+		return result, fault.New(fault.Unauthenticated, "invalid_credentials")
 	}
 	// Reserve one of five attempts before verification; failures persist across restarts and sessions.
-	_, err = tx.ExecContext(r.Context(), "UPDATE identity_pin_devices SET failures=failures+1 WHERE id=?", d.ID)
+	_, err = s.store.recordPINFailure(ctx, tx, d.ID)
 	if err != nil {
 		tx.Rollback()
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
 	if err = tx.Commit(); err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
 	if !pinPattern.MatchString(in.PIN) || !verifyPassword(in.PIN, d.Hash) {
-		fail(w, 401, "invalid_credentials")
-		return
+		return result, fault.New(fault.Unauthenticated, "invalid_credentials")
 	}
-	tx, err = s.db.BeginTx(r.Context(), nil)
+	tx, err = s.store.Begin(ctx)
 	if err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
 	defer tx.Rollback()
 	// Recheck binding, membership, role and password generation after concurrent recovery/removal.
-	fresh, err := s.device(r, tx, 6)
+	fresh, err := s.device(ctx, client, tx, 6)
 	if err != nil || fresh.ID != d.ID || fresh.Hash != d.Hash || fresh.PasswordHash != d.PasswordHash {
-		fail(w, 401, "invalid_credentials")
-		return
+		return result, fault.New(fault.Unauthenticated, "invalid_credentials")
 	}
-	token, err := s.createSession(r.Context(), tx, r, d.User, d.Household)
+	token, err := s.createSession(ctx, tx, client, d.User, d.Household)
 	if err == nil {
 		digest := sha256.Sum256([]byte(token))
-		_, err = tx.ExecContext(r.Context(), "INSERT INTO identity_pin_sessions(token_hash) VALUES(?)", digest[:])
+		_, err = s.store.markPINSession(ctx, tx, digest[:])
 	}
 	if err == nil {
-		_, err = tx.ExecContext(r.Context(), "UPDATE identity_pin_devices SET failures=0 WHERE id=?", d.ID)
+		_, err = s.store.resetPINFailures(ctx, tx, d.ID)
 	}
 	if err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
 	if err = tx.Commit(); err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
-	s.respondSession(w, r, token, 200)
+	result.SessionToken = token
+
+	return result, nil
 }
-func (s *Service) registerPINDevice(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		PIN        string `json:"pin"`
-		Password   string `json:"password"`
-		DeviceName string `json:"deviceName"`
-	}
-	if !decode(w, r, &in) {
-		return
-	}
+func (s *Application) RegisterPINDevice(ctx context.Context, client Client, in RegisterPINDeviceInput) (Result, error) {
+	result := Result{}
+
 	if !pinPattern.MatchString(in.PIN) || !validText(strings.TrimSpace(in.DeviceName), 80) {
-		fail(w, 400, "invalid_pin")
-		return
+		return result, fault.New(fault.Invalid, "invalid_pin")
 	}
-	proof, sessionToken, ok := s.passwordProof(w, r, in.Password)
-	if !ok {
-		return
+	proof, sessionToken, err := s.passwordProof(ctx, client, in.Password)
+	if err != nil {
+		return result, err
 	}
 	hash, err := hashPassword(in.PIN)
 	if err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
-	tx, err := s.db.BeginTx(r.Context(), nil)
+	tx, err := s.store.Begin(ctx)
 	if err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
 	defer tx.Rollback()
-	p, _ := access.Current(r.Context())
-	m, err := s.Member(r.Context(), tx, p.HouseholdID, p.UserID)
-	if err != nil || !pinRole(m.Role) || !s.proofCurrent(r, tx, proof, sessionToken) {
-		fail(w, 403, "pin_not_allowed")
-		return
+	p, _ := access.Current(ctx)
+	m, err := s.Member(ctx, tx, p.HouseholdID, p.UserID)
+	if err != nil || !pinRole(m.Role) || !s.proofCurrent(ctx, tx, proof, sessionToken) {
+		return result, fault.New(fault.Denied, "pin_not_allowed")
 	}
 	for _, cap := range m.Permissions {
 		if strings.HasPrefix(cap, "household.") {
-			fail(w, 403, "pin_not_allowed")
-			return
+			return result, fault.New(fault.Denied, "pin_not_allowed")
 		}
 	}
-	token, err := s.insertPINDevice(r, tx, p.UserID, p.HouseholdID, hash, in.DeviceName)
+	token, err := s.insertPINDevice(ctx, client, tx, p.UserID, p.HouseholdID, hash, in.DeviceName)
 	if err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
 	if err = tx.Commit(); err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
-	s.setPINCookie(w, token)
-	w.WriteHeader(http.StatusNoContent)
+	result.DeviceToken = token
+
+	return result, nil
 }
-func (s *Service) accessSettings(w http.ResponseWriter, r *http.Request) {
-	p, ok := access.Current(r.Context())
+func (s *Application) AccessSettings(ctx context.Context, client Client) (Result, error) {
+	result := Result{}
+
+	p, ok := access.Current(ctx)
 	if !ok {
-		fail(w, 401, "authentication_required")
-		return
+		return result, fault.New(fault.Unauthenticated, "authentication_required")
 	}
-	current, _ := r.Context().Value(sessionKey{}).(*Session)
+	current, _ := ctx.Value(sessionKey{}).(*Session)
 	if current == nil {
-		fail(w, 401, "authentication_required")
-		return
+		return result, fault.New(fault.Unauthenticated, "authentication_required")
 	}
 	var username string
 	var hasPassword bool
-	if err := s.db.QueryRowContext(r.Context(), "SELECT COALESCE(username,'u-'||lower(id)), password_hash!='!' FROM identity_users WHERE id=?", p.UserID).Scan(&username, &hasPassword); err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+	if err := s.store.readAccountAccess(ctx, nil, p.UserID, &username, &hasPassword); err != nil {
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
-	devices := []map[string]any{}
-	rows, err := s.db.QueryContext(r.Context(), "SELECT id,name,expires_at,failures>=5 FROM identity_pin_devices WHERE user_id=? AND household_id=? ORDER BY created_at DESC", p.UserID, p.HouseholdID)
+	devices, err := s.store.readPINDevices(ctx, p.UserID, p.HouseholdID)
 	if err != nil {
-		fail(w, 503, "access_unavailable")
-		return
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id, name string
-		var expiry int64
-		var locked bool
-		if err = rows.Scan(&id, &name, &expiry, &locked); err != nil {
-			fail(w, 503, "access_unavailable")
-			return
-		}
-		devices = append(devices, map[string]any{"id": id, "name": name, "expiresAt": time.Unix(expiry, 0).UTC(), "locked": locked})
-	}
-	if rows.Err() != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
 	allowed := pinRole(current.Role)
 	for cap := range p.Permissions {
@@ -597,81 +492,71 @@ func (s *Service) accessSettings(w http.ResponseWriter, r *http.Request) {
 			allowed = false
 		}
 	}
-	modules.JSON(w, 200, map[string]any{"username": username, "hasPassword": hasPassword, "canUsePIN": allowed, "devices": devices})
+	result.Data = map[string]any{"username": username, "hasPassword": hasPassword, "canUsePIN": allowed, "devices": devices}
+
+	return result, nil
 }
-func (s *Service) updateUsername(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	}
-	if !decode(w, r, &in) {
-		return
-	}
+func (s *Application) UpdateUsername(ctx context.Context, client Client, in UpdateUsernameInput) (Result, error) {
+	result := Result{}
+
 	username, ok := normalizeUsername(in.Username)
 	if !ok {
-		fail(w, 400, "invalid_username")
-		return
+		return result, fault.New(fault.Invalid, "invalid_username")
 	}
-	proof, sessionToken, ok := s.passwordProof(w, r, in.Password)
-	if !ok {
-		return
-	}
-	tx, err := s.db.BeginTx(r.Context(), nil)
+	proof, sessionToken, err := s.passwordProof(ctx, client, in.Password)
 	if err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, err
+	}
+	tx, err := s.store.Begin(ctx)
+	if err != nil {
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
 	defer tx.Rollback()
-	if !s.proofCurrent(r, tx, proof, sessionToken) {
-		fail(w, 401, "authentication_required")
-		return
+	if !s.proofCurrent(ctx, tx, proof, sessionToken) {
+		return result, fault.New(fault.Unauthenticated, "authentication_required")
 	}
-	p, _ := access.Current(r.Context())
-	if _, err = tx.ExecContext(r.Context(), "UPDATE identity_users SET username=? WHERE id=?", username, p.UserID); err != nil {
-		fail(w, 409, "account_identifier_taken")
-		return
+	p, _ := access.Current(ctx)
+	if _, err = s.store.saveUsername(ctx, tx, username, p.UserID); err != nil {
+		return result, fault.New(fault.Conflict, "account_identifier_taken")
 	}
 	if err = tx.Commit(); err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
-	w.WriteHeader(http.StatusNoContent)
+
+	return result, nil
 }
-func (s *Service) revokePINDevice(w http.ResponseWriter, r *http.Request) {
-	p, ok := access.Current(r.Context())
+func (s *Application) RevokePINDevice(ctx context.Context, client Client, target string) (Result, error) {
+	result := Result{}
+
+	p, ok := access.Current(ctx)
 	if !ok {
-		fail(w, 401, "authentication_required")
-		return
+		return result, fault.New(fault.Unauthenticated, "authentication_required")
 	}
-	tx, err := s.db.BeginTx(r.Context(), nil)
+	tx, err := s.store.Begin(ctx)
 	if err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(r.Context(), "DELETE FROM identity_pin_devices WHERE id=? AND user_id=? AND household_id=?", r.PathValue("id"), p.UserID, p.HouseholdID)
+	mutation, err := s.store.deleteDeviceBinding(ctx, tx, target, p.UserID, p.HouseholdID)
 	if err == nil {
-		n, e := result.RowsAffected()
+		n, e := mutation.Affected, mutation.CountError
 		if e != nil {
 			err = e
 		} else if n != 1 {
-			fail(w, 404, "device_not_found")
-			return
+			return result, fault.New(fault.Missing, "device_not_found")
 		}
 	}
 	if err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
 	// Revoking an unlock method also invalidates sessions it could have issued.
-	if _, err = tx.ExecContext(r.Context(), "DELETE FROM identity_sessions WHERE user_id=?", p.UserID); err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+	if _, err = s.store.revokeDeviceSessions(ctx, tx, p.UserID); err != nil {
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
 	if err = tx.Commit(); err != nil {
-		fail(w, 503, "access_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "access_unavailable")
 	}
-	s.clearCookie(w)
-	w.WriteHeader(http.StatusNoContent)
+	result.EndSession = true
+
+	return result, nil
 }

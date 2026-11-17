@@ -3,7 +3,6 @@ package collections
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,15 +15,17 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
+
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/home-atlas/homeatlas/internal/core/access"
 	"github.com/home-atlas/homeatlas/internal/core/backup"
+	"github.com/home-atlas/homeatlas/internal/core/fault"
 	"github.com/home-atlas/homeatlas/internal/core/modules"
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
 )
 
 const MaxFileSize int64 = 20 << 20
@@ -232,38 +233,16 @@ func fileType(file *os.File, filename string, size int64) (string, error) {
 	}
 }
 
-func (m *Module) lookup(r *http.Request, ownerOnly bool) (Item, string, error) {
-	p, _ := access.Current(r.Context())
-	id := r.PathValue("id")
-	if !storageKey.MatchString(id) {
-		return Item{}, "", sql.ErrNoRows
-	}
-	scope := readable
-	args := readArgs(p)
-	if ownerOnly {
-		scope = "d.household_id=? AND d.owner_id=?"
-		args = []any{p.HouseholdID, p.UserID}
-	}
-	d, err := scanItem(m.db.QueryRowContext(r.Context(), "SELECT "+columns+" FROM collection_items d WHERE d.id=? AND "+scope, append([]any{id}, args...)...))
-	return d, d.fileKey, err
+func (m *Module) lookup(r *http.Request, owner bool) (Item, string, error) {
+	return m.Lookup(r.Context(), r.PathValue("id"), owner)
 }
 func (m *Module) owned(r *http.Request) (Item, string, error) { return m.lookup(r, true) }
 
 func (m *Module) detail(w http.ResponseWriter, r *http.Request) {
-	d, _, err := m.lookup(r, false)
+	d, err := m.Detail(r.Context(), r.PathValue("id"))
 	if err != nil {
-		itemError(w, err)
+		collectionError(w, err)
 		return
-	}
-	if m.directory != nil {
-		p, _ := access.Current(r.Context())
-		owner, err := m.directory.Member(r.Context(), nil, p.HouseholdID, d.OwnerID)
-		if err == nil {
-			d.OwnerName = owner.Name
-		} else if !errors.Is(err, sql.ErrNoRows) {
-			fail(w, 503, "members_unavailable")
-			return
-		}
 	}
 	modules.JSON(w, 200, d)
 }
@@ -284,34 +263,12 @@ func (m *Module) update(w http.ResponseWriter, r *http.Request) {
 		uploadError(w, err)
 		return
 	}
-	value, err := m.parseMetadata(r.Context(), raw)
+	d, err := m.Update(r.Context(), r.PathValue("id"), raw)
 	if err != nil {
-		metadataError(w, err)
+		collectionError(w, err)
 		return
 	}
-	p, _ := access.Current(r.Context())
-	tags, _ := json.Marshal(value.Tags)
-	tx, err := m.db.BeginTx(r.Context(), nil)
-	if err != nil {
-		fail(w, 500, "items_unavailable")
-		return
-	}
-	defer tx.Rollback()
-	if err := m.authorizeMutation(r.Context(), tx.Tx, "write"); err != nil {
-		fail(w, 403, "permission_denied")
-		return
-	}
-	row := tx.QueryRowContext(r.Context(), `UPDATE collection_items SET title=?,category=?,description=?,tags=?
-		WHERE id=? AND household_id=? AND owner_id=? RETURNING `+strings.ReplaceAll(columns, "d.", ""), value.Title, value.Category, value.Description, string(tags), r.PathValue("id"), p.HouseholdID, p.UserID)
-	d, err := scanItem(row)
-	if err != nil {
-		itemError(w, err)
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		fail(w, 500, "items_unavailable")
-		return
-	}
+
 	modules.JSON(w, 200, d)
 }
 
@@ -350,7 +307,7 @@ func (m *Module) download(w http.ResponseWriter, r *http.Request) {
 }
 
 func itemError(w http.ResponseWriter, err error) {
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, unitofwork.ErrNotFound) {
 		fail(w, 404, "item_not_found")
 	} else {
 		fail(w, 500, "items_unavailable")
@@ -382,25 +339,10 @@ func metadataError(w http.ResponseWriter, err error) {
 		fail(w, 400, "invalid_metadata")
 	}
 }
-func (m *Module) authorizeMutation(ctx context.Context, tx *sql.Tx, capability string) error {
-	p, ok := access.Current(ctx)
-	if !ok {
-		return errors.New("missing identity")
-	}
-	member, err := m.directory.Member(ctx, tx, p.HouseholdID, p.UserID)
-	if err != nil {
-		return err
-	}
-	if member.MembershipID != p.MembershipID || !slices.Contains(member.Permissions, m.permission("read")) || !slices.Contains(member.Permissions, m.permission(capability)) {
-		return errors.New("revoked permission")
-	}
-	return nil
-}
-
 func (m *Module) openFile(ctx context.Context, key string) (*os.File, func(), error) {
 	if m.config.Storage != nil {
 		f, cleanup, err := m.config.Storage.Open(ctx, m.config.ID, key)
-		if !errors.Is(err, sql.ErrNoRows) {
+		if !errors.Is(err, unitofwork.ErrNotFound) {
 			return f, cleanup, err
 		}
 	}
@@ -410,4 +352,17 @@ func (m *Module) openFile(ctx context.Context, key string) (*os.File, func(), er
 			f.Close()
 		}
 	}, err
+}
+
+func collectionError(w http.ResponseWriter, err error) {
+	var problem *fault.Error
+	if errors.As(err, &problem) {
+		if problem.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(problem.RetryAfter))
+		}
+		statuses := map[fault.Kind]int{fault.Invalid: 400, fault.Unauthenticated: 401, fault.Denied: 403, fault.Missing: 404, fault.Conflict: 409, fault.Internal: 500, fault.Unavailable: 503}
+		fail(w, statuses[problem.Kind], problem.Code)
+		return
+	}
+	itemError(w, err)
 }

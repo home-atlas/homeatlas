@@ -1,14 +1,13 @@
 package app
 
 import (
-	"database/sql"
 	"net/http"
 	"os"
 	"path/filepath"
 
 	"github.com/home-atlas/homeatlas/internal/core/access"
-	"github.com/home-atlas/homeatlas/internal/core/identity"
 	"github.com/home-atlas/homeatlas/internal/core/modules"
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
 )
 
 func (b *householdBackups) recoverInstallation(w http.ResponseWriter, r *http.Request) {
@@ -44,29 +43,9 @@ func (b *householdBackups) recoverInstallation(w http.ResponseWriter, r *http.Re
 		backupFail(w, 400, "backup_identity_required")
 		return
 	}
-	err = b.apply(r.Context(), s, filepath.Join(dir, "validated"), false, func(tx *sql.Tx) (access.Principal, error) {
-		var occupied bool
-		if err := tx.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM household_module_states)").Scan(&occupied); err != nil {
+	err = b.apply(r.Context(), s, filepath.Join(dir, "validated"), false, func(tx unitofwork.Transaction) (access.Principal, error) {
+		if err := b.store.emptyInstallation(r.Context(), tx, b.participants); err != nil {
 			return access.Principal{}, err
-		}
-		if occupied {
-			return access.Principal{}, identity.ErrInstallationNotEmpty
-		}
-		for _, p := range b.participants {
-			present, err := p.Present(r.Context(), tx)
-			if err != nil {
-				return access.Principal{}, err
-			}
-			if !present {
-				continue
-			}
-			empty, err := p.Empty(r.Context(), tx)
-			if err != nil {
-				return access.Principal{}, err
-			}
-			if !empty {
-				return access.Principal{}, identity.ErrInstallationNotEmpty
-			}
 		}
 		return b.accounts.ImportInstallation(r.Context(), tx, s.household, s.members, code)
 	})

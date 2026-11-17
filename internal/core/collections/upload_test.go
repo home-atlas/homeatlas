@@ -3,7 +3,6 @@ package collections
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -14,11 +13,12 @@ import (
 	"github.com/home-atlas/homeatlas/internal/core/access"
 	"github.com/home-atlas/homeatlas/internal/core/database"
 	"github.com/home-atlas/homeatlas/internal/core/modules"
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
 )
 
 type uploadDirectory struct{ permissions []string }
 
-func (d *uploadDirectory) Member(context.Context, *sql.Tx, string, string) (access.Member, error) {
+func (d *uploadDirectory) Member(context.Context, unitofwork.Transaction, string, string) (access.Member, error) {
 	return access.Member{MembershipID: "membership", Permissions: d.permissions}, nil
 }
 
@@ -82,7 +82,7 @@ func TestUploadUseCaseWithoutHTTPPreservesAuthorizationAndCleanup(t *testing.T) 
 					t.Fatal("original not preserved", err)
 				}
 				var owner, home string
-				if err := module.db.QueryRowContext(ctx, "SELECT owner_id,household_id FROM collection_items WHERE id=?", item.ID).Scan(&owner, &home); err != nil || owner != "owner" || home != "home" {
+				if err := module.repository.(*sqliteRepository).db.QueryRowContext(ctx, "SELECT owner_id,household_id FROM collection_items WHERE id=?", item.ID).Scan(&owner, &home); err != nil || owner != "owner" || home != "home" {
 					t.Fatal("scope lost", err)
 				}
 				return
@@ -100,7 +100,7 @@ func TestUploadUseCaseWithoutHTTPPreservesAuthorizationAndCleanup(t *testing.T) 
 				t.Fatal("failed upload left an original", err)
 			}
 			var count int
-			if err := module.db.QueryRowContext(ctx, "SELECT count(*) FROM collection_items").Scan(&count); err != nil || count != 0 {
+			if err := module.repository.(*sqliteRepository).db.QueryRowContext(ctx, "SELECT count(*) FROM collection_items").Scan(&count); err != nil || count != 0 {
 				t.Fatal("failed upload published metadata", err)
 			}
 			if len(module.uploads) != 0 {

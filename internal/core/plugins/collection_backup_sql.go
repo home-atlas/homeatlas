@@ -4,9 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"github.com/home-atlas/homeatlas/internal/core/backup"
 	"os"
 	"strings"
+
+	"github.com/home-atlas/homeatlas/internal/core/backup"
 )
 
 // CollectionBackup pins newly exported snapshots to the reviewed package.

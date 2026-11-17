@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,21 +14,9 @@ import (
 	"time"
 
 	"github.com/home-atlas/homeatlas/internal/core/access"
-	"github.com/home-atlas/homeatlas/internal/core/database"
 	"github.com/home-atlas/homeatlas/internal/core/modules"
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
 )
-
-const scheduleSchema = `
-CREATE TABLE household_backup_schedules (
- household_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
- interval_hours INTEGER NOT NULL CHECK(interval_hours IN (24,168)), keep_count INTEGER NOT NULL CHECK(keep_count BETWEEN 1 AND 30),
- owner_id TEXT NOT NULL, member_id TEXT NOT NULL, sealed_password BLOB NOT NULL, next_run_at INTEGER NOT NULL
-);
-CREATE TABLE household_backup_history (
- id TEXT PRIMARY KEY, household_id TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER NOT NULL DEFAULT 0,
- trigger TEXT NOT NULL, status TEXT NOT NULL, error_code TEXT NOT NULL DEFAULT '', size_bytes INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX household_backup_history_home ON household_backup_history(household_id,started_at DESC,id DESC);`
 
 type backupSchedule struct {
 	Enabled                  bool   `json:"enabled"`
@@ -59,27 +46,7 @@ func backupTimestamp(unix int64) string {
 	return time.Unix(unix, 0).UTC().Format(time.RFC3339)
 }
 func (b *householdBackups) prepareSchedules(ctx context.Context) error {
-	if err := database.Apply(ctx, b.db, "app.backup-schedules", []database.Migration{{Version: 1, SQL: scheduleSchema}}); err != nil {
-		return err
-	}
-	// A single process owns this directory. A persisted running row means the previous process stopped.
-	rows, err := b.db.QueryContext(ctx, "SELECT id,household_id FROM household_backup_history WHERE status='running'")
-	if err != nil {
-		return err
-	}
-	type unfinished struct{ id, home string }
-	var pending []unfinished
-	for rows.Next() {
-		var row unfinished
-		if err = rows.Scan(&row.id, &row.home); err != nil {
-			break
-		}
-		pending = append(pending, row)
-	}
-	if err == nil {
-		err = rows.Err()
-	}
-	rows.Close()
+	pending, err := b.store.interrupted(ctx)
 	if err != nil {
 		return err
 	}
@@ -92,18 +59,10 @@ func (b *householdBackups) prepareSchedules(ctx context.Context) error {
 			return err
 		}
 	}
-	_, err = b.db.ExecContext(ctx, "UPDATE household_backup_history SET status='failed',error_code='backup_interrupted',finished_at=? WHERE status='running'", time.Now().Unix())
-	return err
+	return b.store.finishInterrupted(ctx, time.Now().Unix())
 }
 func (b *householdBackups) loadSchedule(ctx context.Context, home string) (backupSchedule, error) {
-	s := backupSchedule{household: home, IntervalHours: 24, Keep: 7}
-	err := b.db.QueryRowContext(ctx, `SELECT enabled,interval_hours,keep_count,owner_id,member_id,sealed_password,next_run_at FROM household_backup_schedules WHERE household_id=?`, home).Scan(&s.Enabled, &s.IntervalHours, &s.Keep, &s.owner, &s.member, &s.sealed, &s.next)
-	if errors.Is(err, sql.ErrNoRows) {
-		err = nil
-	}
-	s.NextRun = backupTimestamp(s.next)
-	s.PasswordConfigured = len(s.sealed) > 0
-	return s, err
+	return b.store.loadSchedule(ctx, home)
 }
 func (b *householdBackups) getSchedule(w http.ResponseWriter, r *http.Request) {
 	if !b.allowed(w, r) {
@@ -174,14 +133,14 @@ func (b *householdBackups) saveSchedule(w http.ResponseWriter, r *http.Request) 
 			next = time.Now().UTC().Add(time.Duration(input.IntervalHours) * time.Hour).Unix()
 		}
 	}
-	tx, err := b.db.BeginTx(r.Context(), nil)
+	tx, err := b.store.Begin(r.Context())
 	if err != nil {
 		backupError(w, err)
 		return
 	}
 	defer tx.Rollback()
 	if _, err = b.authorize(r.Context(), tx); err == nil {
-		_, err = tx.ExecContext(r.Context(), `INSERT INTO household_backup_schedules VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(household_id) DO UPDATE SET enabled=excluded.enabled,interval_hours=excluded.interval_hours,keep_count=excluded.keep_count,owner_id=excluded.owner_id,member_id=excluded.member_id,sealed_password=excluded.sealed_password,next_run_at=excluded.next_run_at`, p.HouseholdID, input.Enabled, input.IntervalHours, input.Keep, p.UserID, p.MembershipID, sealed, next)
+		err = b.store.saveSchedule(r.Context(), tx, p, input.Enabled, input.IntervalHours, input.Keep, sealed, next)
 	}
 	if err == nil {
 		err = tx.Commit()
@@ -212,39 +171,18 @@ func (b *householdBackups) history(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	p, _ := access.Current(r.Context())
-	var total int
-	if err := b.db.QueryRowContext(r.Context(), "SELECT count(*) FROM household_backup_history WHERE household_id=?", p.HouseholdID).Scan(&total); err != nil {
-		backupError(w, err)
-		return
-	}
-	rows, err := b.db.QueryContext(r.Context(), `SELECT id,started_at,finished_at,trigger,status,error_code,size_bytes FROM household_backup_history WHERE household_id=? ORDER BY rowid DESC LIMIT 25 OFFSET ?`, p.HouseholdID, offset)
+	items, total, err := b.store.history(r.Context(), p.HouseholdID, offset)
 	if err != nil {
 		backupError(w, err)
 		return
 	}
-	defer rows.Close()
-	items := []backupHistory{}
-	for rows.Next() {
-		var h backupHistory
-		var started, finished int64
-		if err = rows.Scan(&h.ID, &started, &finished, &h.Trigger, &h.Status, &h.ErrorCode, &h.Size); err != nil {
-			break
-		}
-		h.StartedAt = backupTimestamp(started)
-		h.FinishedAt = backupTimestamp(finished)
+	for i := range items {
+		h := &items[i]
 		path, pathErr := b.historyPath(p.HouseholdID, h.ID)
 		if h.Status == "ready" && pathErr == nil {
 			info, statErr := os.Stat(path)
 			h.Available = statErr == nil && info.Mode().IsRegular() && info.Size() == h.Size
 		}
-		items = append(items, h)
-	}
-	if err == nil {
-		err = rows.Err()
-	}
-	if err != nil {
-		backupError(w, err)
-		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	modules.JSON(w, 200, map[string]any{"items": items, "total": total})
@@ -262,9 +200,9 @@ func (b *householdBackups) downloadHistory(w http.ResponseWriter, r *http.Reques
 	}
 	var status string
 	var size int64
-	err = b.db.QueryRowContext(r.Context(), "SELECT status,size_bytes FROM household_backup_history WHERE household_id=? AND id=?", p.HouseholdID, id).Scan(&status, &size)
+	status, size, err = b.store.historyFile(r.Context(), p.HouseholdID, id)
 	info, statErr := os.Stat(path)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && (status != "ready" || statErr != nil || !info.Mode().IsRegular() || info.Size() != size)) {
+	if errors.Is(err, unitofwork.ErrNotFound) || (err == nil && (status != "ready" || statErr != nil || !info.Mode().IsRegular() || info.Size() != size)) {
 		backupFail(w, 404, "backup_not_found")
 		return
 	}
@@ -319,8 +257,7 @@ func (b *householdBackups) runDueSchedule(ctx context.Context, now time.Time) {
 	if ctx.Err() != nil {
 		return
 	}
-	var home string
-	err := b.db.QueryRowContext(ctx, "SELECT household_id FROM household_backup_schedules WHERE enabled=1 AND next_run_at<=? ORDER BY next_run_at,household_id LIMIT 1", now.Unix()).Scan(&home)
+	home, err := b.store.dueSchedule(ctx, now.Unix())
 	if err != nil {
 		return
 	}
@@ -349,24 +286,20 @@ func (b *householdBackups) executeSchedule(parent context.Context, s backupSched
 	p := access.Principal{HouseholdID: s.household, UserID: s.owner, MembershipID: s.member}
 	ctx = access.WithPrincipal(ctx, p)
 	id := rand.Text()
-	tx, err := b.db.BeginTx(ctx, nil)
+	tx, err := b.store.Begin(ctx)
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback()
 	_, authErr := b.authorize(ctx, tx)
-	if authErr != nil && !errors.Is(authErr, errBackupDenied) && !errors.Is(authErr, sql.ErrNoRows) {
+	if authErr != nil && !errors.Is(authErr, errBackupDenied) && !errors.Is(authErr, unitofwork.ErrNotFound) {
 		return "", authErr
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO household_backup_history(id,household_id,started_at,trigger,status) VALUES(?,?,?,?,'running')`, id, s.household, now.Unix(), trigger); err != nil {
+	if err = b.store.startHistory(ctx, tx, id, s.household, now.Unix(), trigger); err != nil {
 		return "", err
 	}
 	next := now.Add(time.Duration(s.IntervalHours) * time.Hour).Unix()
-	if authErr != nil {
-		_, err = tx.ExecContext(ctx, "UPDATE household_backup_schedules SET enabled=0,sealed_password=X'',next_run_at=0 WHERE household_id=?", s.household)
-	} else {
-		_, err = tx.ExecContext(ctx, "UPDATE household_backup_schedules SET next_run_at=? WHERE household_id=?", next, s.household)
-	}
+	err = b.store.advanceSchedule(ctx, tx, s.household, next, authErr != nil)
 	if err == nil {
 		err = tx.Commit()
 	}
@@ -387,7 +320,7 @@ func (b *householdBackups) executeSchedule(parent context.Context, s backupSched
 		status = "failed"
 		code = scheduledErrorCode(err)
 	}
-	_, finishErr := b.db.ExecContext(finishCtx, "UPDATE household_backup_history SET status=?,error_code=?,size_bytes=?,finished_at=? WHERE id=? AND household_id=?", status, code, size, time.Now().Unix(), id, s.household)
+	finishErr := b.store.finishHistory(finishCtx, id, s.household, status, code, size, time.Now().Unix())
 	if finishErr != nil {
 		if path, pathErr := b.historyPath(s.household, id); pathErr == nil {
 			os.Remove(path)
@@ -399,7 +332,7 @@ func (b *householdBackups) executeSchedule(parent context.Context, s backupSched
 		return id, err
 	}
 	if retentionErr := b.retainScheduled(finishCtx, s); retentionErr != nil {
-		b.db.ExecContext(finishCtx, "UPDATE household_backup_history SET error_code='backup_retention_failed' WHERE id=?", id)
+		b.store.retentionFailed(finishCtx, id)
 	}
 	return id, nil
 }
@@ -458,22 +391,7 @@ func (b *householdBackups) writeScheduledBackup(ctx context.Context, s backupSch
 	return info.Size(), nil
 }
 func (b *householdBackups) retainScheduled(ctx context.Context, s backupSchedule) error {
-	rows, err := b.db.QueryContext(ctx, "SELECT id FROM household_backup_history WHERE household_id=? AND status='ready' ORDER BY rowid DESC LIMIT -1 OFFSET ?", s.household, s.Keep)
-	if err != nil {
-		return err
-	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err = rows.Scan(&id); err != nil {
-			break
-		}
-		ids = append(ids, id)
-	}
-	if err == nil {
-		err = rows.Err()
-	}
-	rows.Close()
+	ids, err := b.store.expiredHistory(ctx, s.household, s.Keep)
 	if err != nil {
 		return err
 	}
@@ -488,14 +406,12 @@ func (b *householdBackups) retainScheduled(ctx context.Context, s backupSchedule
 		if err = syncDirectory(filepath.Dir(path)); err != nil {
 			return err
 		}
-		if _, err = b.db.ExecContext(ctx, "UPDATE household_backup_history SET status='expired',error_code='' WHERE household_id=? AND id=? AND status='ready'", s.household, id); err != nil {
+		if err = b.store.expireHistory(ctx, s.household, id); err != nil {
 			return err
 		}
 	}
 	return b.trimHistory(ctx, s.household)
 }
 func (b *householdBackups) trimHistory(ctx context.Context, home string) error {
-	// Keep retained files and the latest 200 attempts.
-	_, err := b.db.ExecContext(ctx, `DELETE FROM household_backup_history WHERE household_id=? AND status IN ('failed','expired') AND id NOT IN (SELECT id FROM household_backup_history WHERE household_id=? ORDER BY rowid DESC LIMIT 200)`, home, home)
-	return err
+	return b.store.trimHistory(ctx, home)
 }

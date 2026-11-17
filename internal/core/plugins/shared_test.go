@@ -40,7 +40,7 @@ func sharedGrantTo(t *testing.T, s *Store, ctx context.Context, key, user, permi
 }
 func grantSharing(t *testing.T, s *Store) {
 	t.Helper()
-	if _, err := s.db.Exec("INSERT INTO identity_permissions SELECT user_id,household_id,'ext-test.share' FROM identity_memberships"); err != nil {
+	if _, err := s.repository.db.Exec("INSERT INTO identity_permissions SELECT user_id,household_id,'ext-test.share' FROM identity_memberships"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -105,7 +105,7 @@ func TestSharedRecordsACLRevocationIsolationAndMemberships(t *testing.T) {
 		t.Fatal("revoked read succeeded")
 	}
 	sharedGrantTo(t, s, alice, "same", "bob", "write")
-	if _, err := s.db.Exec("UPDATE identity_member_ids SET id='bob-rejoined' WHERE id='bob-a'"); err != nil {
+	if _, err := s.repository.db.Exec("UPDATE identity_member_ids SET id='bob-rejoined' WHERE id='bob-a'"); err != nil {
 		t.Fatal(err)
 	}
 	bob = storageContext("bob", "home-a", "bob-rejoined")
@@ -114,7 +114,7 @@ func TestSharedRecordsACLRevocationIsolationAndMemberships(t *testing.T) {
 		t.Fatal("reinvitation revived grant")
 	}
 	sharedGrantTo(t, s, alice, "same", "bob", "read")
-	if _, err := s.db.Exec("DELETE FROM identity_permissions WHERE user_id='bob' AND capability='ext-test.read'"); err != nil {
+	if _, err := s.repository.db.Exec("DELETE FROM identity_permissions WHERE user_id='bob' AND capability='ext-test.read'"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.begin(bob, &Package{Manifest: Manifest{ID: "ext-test", Storage: "shared"}}, true); !errors.Is(err, ErrStorageDenied) {
@@ -159,7 +159,7 @@ func TestSharedListsReplacementAtomicityAndConsent(t *testing.T) {
 	if _, err := private.call(alice, storageRequest{Op: "shared.get", Key: "one"}); !errors.Is(err, ErrStorageDenied) {
 		t.Fatal("private package used shared host API")
 	}
-	if _, err := s.db.Exec("CREATE TRIGGER fail_shared BEFORE INSERT ON plugin_shared_grants BEGIN SELECT RAISE(ABORT,'test'); END"); err != nil {
+	if _, err := s.repository.db.Exec("CREATE TRIGGER fail_shared BEFORE INSERT ON plugin_shared_grants BEGIN SELECT RAISE(ABORT,'test'); END"); err != nil {
 		t.Fatal(err)
 	}
 	a = sharedAction(t, s, alice, false)
@@ -183,7 +183,7 @@ func TestSharedGrantListingRechecksShareAtCommit(t *testing.T) {
 	sharedSet(t, s, alice, "record", "value")
 	a := sharedAction(t, s, alice, true)
 	sharedCall(t, a, alice, storageRequest{Op: "shared.grants", Key: "record"})
-	if _, err := s.db.Exec("DELETE FROM identity_permissions WHERE user_id='alice' AND household_id='home-a' AND capability='ext-test.share'"); err != nil {
+	if _, err := s.repository.db.Exec("DELETE FROM identity_permissions WHERE user_id='alice' AND household_id='home-a' AND capability='ext-test.share'"); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.commit(alice); !errors.Is(err, ErrStorageDenied) {
@@ -195,7 +195,7 @@ func TestSharedAndPrivateWritesRollBackTogether(t *testing.T) {
 	s := storageFixture(t)
 	alice := storageContext("alice", "home-a", "alice-a")
 	sharedSet(t, s, alice, "record", "original")
-	if _, err := s.db.Exec("CREATE TRIGGER fail_private_after_shared BEFORE INSERT ON plugin_storage_records BEGIN SELECT RAISE(ABORT,'test'); END"); err != nil {
+	if _, err := s.repository.db.Exec("CREATE TRIGGER fail_private_after_shared BEFORE INSERT ON plugin_storage_records BEGIN SELECT RAISE(ABORT,'test'); END"); err != nil {
 		t.Fatal(err)
 	}
 	a := sharedAction(t, s, alice, false)

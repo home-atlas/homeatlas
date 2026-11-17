@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -13,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/home-atlas/homeatlas/internal/core/backup"
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
 )
 
 // Collection is supplied by trusted host assembly, never by HTTP or a WASI guest.
@@ -38,9 +38,7 @@ func (s *Store) present(ctx context.Context, c Collection) (bool, error) {
 	if !safeID.MatchString(c.ID) || !tableName.MatchString(c.Table) || c.Directory == "" {
 		return false, Invalid
 	}
-	var present bool
-	err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?)", c.Table).Scan(&present)
-	return present, err
+	return s.repository.present(ctx, c.Table)
 }
 func (s *Store) MovePreview(ctx context.Context, house string, collections []Collection) (MoveStats, error) {
 	current, _, err := s.current(ctx, house)
@@ -56,34 +54,17 @@ func (s *Store) MovePreview(ctx context.Context, house string, collections []Col
 		if !present {
 			continue
 		}
-		rows, err := s.db.QueryContext(ctx, `SELECT EXISTS(SELECT 1 FROM file_storage_locations l WHERE l.module_id=? AND l.file_key=d.file_key),count(*),COALESCE(sum(d.size_bytes),0) FROM `+c.Table+` d WHERE household_id=? AND file_key!='' GROUP BY 1`, c.ID, house)
+		counts, err := s.repository.moveStats(ctx, house, c)
 		if err != nil {
 			return stats, err
 		}
-		for rows.Next() {
-			var remote bool
-			var count int
-			var size int64
-			if err = rows.Scan(&remote, &count, &size); err != nil {
-				break
-			}
-			if remote {
-				stats.Remote += count
-				stats.RemoteBytes += size
-			} else {
-				stats.Local += count
-				stats.LocalBytes += size
-			}
-		}
-		if err == nil {
-			err = rows.Err()
-		}
-		rows.Close()
-		if err != nil {
-			return stats, err
-		}
+		stats.Remote += counts.Remote
+		stats.RemoteBytes += counts.RemoteBytes
+		stats.Local += counts.Local
+		stats.LocalBytes += counts.LocalBytes
+
 	}
-	err = s.db.QueryRowContext(ctx, "SELECT count(*) FROM file_storage_cleanup WHERE household_id=?", house).Scan(&stats.PendingCleanup)
+	stats.PendingCleanup, err = s.repository.pendingCleanup(ctx, house)
 	return stats, err
 }
 
@@ -94,7 +75,7 @@ type moveItem struct {
 type obsolete struct{ id, module, key, profile, object string }
 
 // MoveNext commits at most one verified original; the durable cleanup record allows retry after a crash.
-func (s *Store) MoveNext(ctx context.Context, house, revision string, collections []Collection, authorize func(*sql.Tx) error) (MoveResult, error) {
+func (s *Store) MoveNext(ctx context.Context, house, revision string, collections []Collection, authorize func(unitofwork.Transaction) error) (MoveResult, error) {
 	result := MoveResult{}
 	if err := authorize(nil); err != nil {
 		return result, err
@@ -106,8 +87,7 @@ func (s *Store) MoveNext(ctx context.Context, house, revision string, collection
 	if revision != settings.Revision {
 		return result, Conflict
 	}
-	var old obsolete
-	err = s.db.QueryRowContext(ctx, "SELECT id,module_id,file_key,profile_id,object_key FROM file_storage_cleanup WHERE household_id=? ORDER BY id LIMIT 1", house).Scan(&old.id, &old.module, &old.key, &old.profile, &old.object)
+	old, err := s.repository.nextCleanup(ctx, house)
 	if err == nil {
 		if err = s.clean(ctx, house, old, collections); err != nil {
 			return result, err
@@ -115,7 +95,7 @@ func (s *Store) MoveNext(ctx context.Context, house, revision string, collection
 		result.MoveStats, err = s.MovePreview(ctx, house, collections)
 		return result, err
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if !errors.Is(err, unitofwork.ErrNotFound) {
 		return result, err
 	}
 	for _, c := range collections {
@@ -126,13 +106,8 @@ func (s *Store) MoveNext(ctx context.Context, house, revision string, collection
 		if !present {
 			continue
 		}
-		var item moveItem
-		condition := "EXISTS"
-		if profile != "" {
-			condition = "NOT EXISTS"
-		}
-		err = s.db.QueryRowContext(ctx, `SELECT id,file_key,size_bytes,sha256 FROM `+c.Table+` d WHERE household_id=? AND file_key!='' AND `+condition+`(SELECT 1 FROM file_storage_locations l WHERE l.module_id=? AND l.file_key=d.file_key) ORDER BY id LIMIT 1`, house, c.ID).Scan(&item.id, &item.key, &item.size, &item.digest)
-		if errors.Is(err, sql.ErrNoRows) {
+		item, err := s.repository.nextMove(ctx, house, c, profile != "")
+		if errors.Is(err, unitofwork.ErrNotFound) {
 			continue
 		}
 		if err != nil {
@@ -148,7 +123,7 @@ func (s *Store) MoveNext(ctx context.Context, house, revision string, collection
 	result.MoveStats, err = s.MovePreview(ctx, house, collections)
 	return result, err
 }
-func (s *Store) moveOne(ctx context.Context, house, revision string, c Collection, item moveItem, targetProfile string, target S3Config, authorize func(*sql.Tx) error) error {
+func (s *Store) moveOne(ctx context.Context, house, revision string, c Collection, item moveItem, targetProfile string, target S3Config, authorize func(unitofwork.Transaction) error) error {
 	if !safeID.MatchString(item.key) || item.size < 1 || item.size > 20<<20 || len(item.digest) != 64 {
 		return Invalid
 	}
@@ -173,7 +148,10 @@ func (s *Store) moveOne(ctx context.Context, house, revision string, c Collectio
 			}
 		}
 	} else {
-		err = s.db.QueryRowContext(ctx, "SELECT profile_id,object_key FROM file_storage_locations WHERE module_id=? AND file_key=?", c.ID, item.key).Scan(&old.profile, &old.object)
+		location, readErr := s.repository.location(ctx, c.ID, item.key)
+		err = readErr
+		old.profile = location.profile
+		old.object = location.object
 		if err != nil {
 			return Unavailable
 		}
@@ -236,7 +214,7 @@ func (s *Store) moveOne(ctx context.Context, house, revision string, c Collectio
 			return Unavailable
 		}
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.repository.Begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -244,38 +222,16 @@ func (s *Store) moveOne(ctx context.Context, house, revision string, c Collectio
 	if err = authorize(tx); err != nil {
 		return err
 	}
-	var fresh string
-	err = tx.QueryRowContext(ctx, "SELECT revision FROM file_storage_settings WHERE household_id=?", house).Scan(&fresh)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	_, fresh, err := s.repository.settings(ctx, tx, house)
+	if err != nil && !errors.Is(err, unitofwork.ErrNotFound) {
 		return err
 	}
 	if fresh != revision {
 		return Conflict
 	}
-	updated, err := tx.ExecContext(ctx, `UPDATE `+c.Table+` SET file_key=? WHERE household_id=? AND id=? AND file_key=?`, next, house, item.id, item.key)
+	referenced, err := s.repository.publishMove(ctx, tx, house, c, item, next, old, pending)
 	if err != nil {
 		return err
-	}
-	n, err := updated.RowsAffected()
-	if err != nil || n != 1 {
-		return Conflict
-	}
-	if pending != nil {
-		if err = pending.Publish(ctx, tx); err != nil {
-			return err
-		}
-	}
-	var referenced bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM `+c.Table+` WHERE file_key=?)`, item.key).Scan(&referenced); err != nil {
-		return err
-	}
-	if !referenced {
-		if _, err = tx.ExecContext(ctx, "DELETE FROM file_storage_locations WHERE module_id=? AND file_key=?", c.ID, item.key); err != nil {
-			return err
-		}
-		if _, err = tx.ExecContext(ctx, "INSERT INTO file_storage_cleanup VALUES(?,?,?,?,?,?)", old.id, house, old.module, old.key, old.profile, old.object); err != nil {
-			return err
-		}
 	}
 	if err = tx.Commit(); err != nil {
 		return err
@@ -346,6 +302,5 @@ func (s *Store) clean(ctx context.Context, house string, old obsolete, collectio
 			}
 		}
 	}
-	_, err := s.db.ExecContext(ctx, "DELETE FROM file_storage_cleanup WHERE id=? AND household_id=?", old.id, house)
-	return err
+	return s.repository.finishCleanup(ctx, house, old.id)
 }

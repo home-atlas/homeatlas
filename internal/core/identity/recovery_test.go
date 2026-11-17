@@ -17,7 +17,7 @@ import (
 
 func TestSetupRequiresPrivateCodeAndSurvivesRestart(t *testing.T) {
 	dir := t.TempDir()
-	db, err := database.Open(filepath.Join(dir, "homeatlas.db"))
+	db, err := database.Open(filepath.Join(dir, "identityDB(homeatlas)"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestSetupRejectsUnsafeCodeFiles(t *testing.T) {
 	for _, kind := range []string{"public", "symlink", "damaged", "missing configuration"} {
 		t.Run(kind, func(t *testing.T) {
 			dir := t.TempDir()
-			db, err := database.Open(filepath.Join(dir, "homeatlas.db"))
+			db, err := database.Open(filepath.Join(dir, "identityDB(homeatlas)"))
 			if err != nil {
 				t.Fatal(err)
 			}

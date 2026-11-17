@@ -2,10 +2,10 @@ package modules
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 
 	"github.com/home-atlas/homeatlas/internal/core/access"
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
 )
 
 var (
@@ -15,28 +15,9 @@ var (
 	ErrHouseholdRequired = errors.New("authenticated household required")
 )
 
-type queryer interface {
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}
-
 // The installation state is an upper bound; household preferences never enable a globally blocked module.
-func (r *Registry) effective(ctx context.Context, q queryer, household string) ([]Status, error) {
-	rows, err := q.QueryContext(ctx, `SELECT module_id,enabled FROM household_module_states WHERE household_id=?`, household)
-	if err != nil {
-		return nil, err
-	}
-	overrides := map[string]bool{}
-	for rows.Next() {
-		var id string
-		var enabled bool
-		if err := rows.Scan(&id, &enabled); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		overrides[id] = enabled
-	}
-	err = rows.Err()
-	rows.Close()
+func (r *Registry) effective(ctx context.Context, tx unitofwork.Transaction, household string) ([]Status, error) {
+	overrides, err := r.store.overrides(ctx, tx, household)
 	if err != nil {
 		return nil, err
 	}
@@ -70,18 +51,18 @@ func moduleEnabled(states []Status, id string) bool {
 func (r *Registry) ListFor(ctx context.Context, household string) ([]Status, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.effective(ctx, r.db, household)
+	return r.effective(ctx, nil, household)
 }
 
 // Authorize under the same transaction as the state change. Keep the lock→DB order used by routes/search.
-func (r *Registry) SetHouseholdEnabled(ctx context.Context, id string, enabled bool, authorize func(*sql.Tx) error) error {
+func (r *Registry) SetHouseholdEnabled(ctx context.Context, id string, enabled bool, authorize func(unitofwork.Transaction) error) error {
 	p, ok := access.Current(ctx)
 	if !ok || authorize == nil {
 		return ErrHouseholdRequired
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.store.Begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -118,8 +99,7 @@ func (r *Registry) SetHouseholdEnabled(ctx context.Context, id string, enabled b
 			}
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO household_module_states(household_id,module_id,enabled) VALUES(?,?,?)
- ON CONFLICT(household_id,module_id) DO UPDATE SET enabled=excluded.enabled`, p.HouseholdID, id, enabled); err != nil {
+	if err := r.store.setHouseholdEnabled(ctx, tx, p.HouseholdID, id, enabled); err != nil {
 		return err
 	}
 	return tx.Commit()

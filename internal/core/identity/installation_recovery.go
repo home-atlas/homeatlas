@@ -3,14 +3,14 @@ package identity
 import (
 	"context"
 	"crypto/subtle"
-	"database/sql"
 	"errors"
-	"net/http"
 	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/home-atlas/homeatlas/internal/core/access"
+	"github.com/home-atlas/homeatlas/internal/core/fault"
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
 )
 
 var ErrInstallationNotEmpty = errors.New("installation already contains identity")
@@ -28,32 +28,18 @@ type BackupMember struct {
 	Permissions                         []string
 }
 
-func (s *Service) BackupMembers(ctx context.Context, tx *sql.Tx, household string) ([]BackupMember, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT u.id,u.name,COALESCE(u.email,''),u.password_hash,m.role,mi.id,COALESCE(u.username,'u-'||lower(u.id)),u.assisted FROM identity_memberships m JOIN identity_users u ON u.id=m.user_id JOIN identity_member_ids mi ON mi.user_id=m.user_id AND mi.household_id=m.household_id WHERE m.household_id=? ORDER BY u.id`, household)
+func (s *Application) BackupMembers(ctx context.Context, tx unitofwork.Transaction, household string) ([]BackupMember, error) {
+	members, err := s.store.readBackupMemberRecords(ctx, tx, household, 1000)
 	if err != nil {
 		return nil, err
 	}
-	var members []BackupMember
-	for rows.Next() {
-		var m BackupMember
-		if err = rows.Scan(&m.ID, &m.Name, &m.Email, &m.PasswordHash, &m.Role, &m.MembershipID, &m.Username, &m.Assisted); err != nil {
-			break
-		}
-		if !validPasswordHash(m.PasswordHash) {
-			m.PasswordHash = "!"
-		}
-		members = append(members, m)
-		if len(members) > 1000 {
-			err = ErrRecoveryMembers
-			break
-		}
+	if len(members) > 1000 {
+		return nil, ErrRecoveryMembers
 	}
-	if err == nil {
-		err = rows.Err()
-	}
-	rows.Close()
-	if err != nil {
-		return nil, err
+	for i := range members {
+		if !validPasswordHash(members[i].PasswordHash) {
+			members[i].PasswordHash = "!"
+		}
 	}
 	for i := range members {
 		m, err := s.Member(ctx, tx, household, members[i].ID)
@@ -108,16 +94,14 @@ func ValidateBackupMembers(members []BackupMember) error {
 	return nil
 }
 
-func (s *Service) validSetupCode(code string) bool {
+func (s *Application) validSetupCode(code string) bool {
 	digest, valid := tokenDigest(strings.TrimSpace(code))
 	return valid && len(s.setupCodeHash) > 0 && subtle.ConstantTimeCompare(digest, s.setupCodeHash) == 1
 }
 
-func emptyInstallation(ctx context.Context, q interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}) error {
+func (s *Application) emptyInstallation(ctx context.Context, tx unitofwork.Transaction) error {
 	var occupied bool
-	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identity_installation) OR EXISTS(SELECT 1 FROM identity_users) OR EXISTS(SELECT 1 FROM identity_households) OR EXISTS(SELECT 1 FROM identity_memberships)`).Scan(&occupied); err != nil {
+	if err := s.store.readInstallationOccupied(ctx, tx, &occupied); err != nil {
 		return err
 	}
 	if occupied {
@@ -127,28 +111,26 @@ func emptyInstallation(ctx context.Context, q interface {
 }
 
 // Check before accepting an archive; recheck the code and empty state in the committing transaction.
-func (s *Service) AuthorizeInstallationRecovery(w http.ResponseWriter, r *http.Request, code string) bool {
-	if err := emptyInstallation(r.Context(), s.db); err != nil {
+func (s *Application) CheckInstallationRecovery(ctx context.Context, client Client, code string) error {
+	if err := s.emptyInstallation(ctx, nil); err != nil {
 		if errors.Is(err, ErrInstallationNotEmpty) {
-			fail(w, 409, "setup_completed")
+			return fault.New(fault.Conflict, "setup_completed")
 		} else {
-			fail(w, 503, "setup_unavailable")
+			return fault.New(fault.Unavailable, "setup_unavailable")
 		}
-		return false
 	}
-	if !s.limit(w, r, "setup") {
-		return false
+	if err := s.limit(ctx, client, "setup"); err != nil {
+		return err
 	}
 	if !s.validSetupCode(code) {
-		fail(w, 403, "invalid_setup_code")
-		return false
+		return fault.New(fault.Denied, "invalid_setup_code")
 	}
-	return true
+	return nil
 }
 
-func (s *Service) ImportInstallation(ctx context.Context, tx *sql.Tx, h Household, members []BackupMember, code string) (access.Principal, error) {
+func (s *Application) ImportInstallation(ctx context.Context, tx unitofwork.Transaction, h Household, members []BackupMember, code string) (access.Principal, error) {
 	var owner access.Principal
-	if err := emptyInstallation(ctx, tx); err != nil {
+	if err := s.emptyInstallation(ctx, tx); err != nil {
 		return owner, err
 	}
 	if !s.validSetupCode(code) {
@@ -168,21 +150,21 @@ func (s *Service) ImportInstallation(ctx context.Context, tx *sql.Tx, h Househol
 			}
 		}
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO identity_installation(singleton) VALUES(1)"); err != nil {
+	if _, err := s.store.restoreInstallation(ctx, tx); err != nil {
 		return owner, err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO identity_households(id,name,timezone) VALUES(?,?,?)", h.ID, h.Name, h.Timezone); err != nil {
+	if _, err := s.store.restoreHousehold(ctx, tx, h.ID, h.Name, h.Timezone); err != nil {
 		return owner, err
 	}
 	for _, m := range members {
-		if _, err := tx.ExecContext(ctx, "INSERT INTO identity_users(id,name,email,password_hash,username,assisted) VALUES(?,?,?,?,?,?)", m.ID, m.Name, nullableEmail(m.Email), m.PasswordHash, restoredUsername(m), m.Assisted); err != nil {
+		if _, err := s.store.restoreAccount(ctx, tx, m.ID, m.Name, nullableEmail(m.Email), m.PasswordHash, restoredUsername(m), m.Assisted); err != nil {
 			return owner, err
 		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO identity_memberships(user_id,household_id,role) VALUES(?,?,?)", m.ID, h.ID, m.Role); err != nil {
+		if _, err := s.store.restoreMembership(ctx, tx, m.ID, h.ID, m.Role); err != nil {
 			return owner, err
 		}
 		for _, permission := range m.Permissions {
-			if _, err := tx.ExecContext(ctx, "INSERT INTO identity_permissions(user_id,household_id,capability) VALUES(?,?,?)", m.ID, h.ID, permission); err != nil {
+			if _, err := s.store.restoreCapability(ctx, tx, m.ID, h.ID, permission); err != nil {
 				return owner, err
 			}
 		}
@@ -194,7 +176,7 @@ func (s *Service) ImportInstallation(ctx context.Context, tx *sql.Tx, h Househol
 }
 
 // The committed singleton prevents reuse even if cleanup is interrupted.
-func (s *Service) FinishInstallationRecovery() { s.removeSetupCode() }
+func (s *Application) FinishInstallationRecovery() { s.removeSetupCode() }
 
 func restoredUsername(m BackupMember) string {
 	if m.Username != "" {

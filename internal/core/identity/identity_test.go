@@ -27,7 +27,7 @@ const testSetupCode = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 func newService(t *testing.T, origin string) (*Service, http.Handler, *sql.DB) {
 	t.Helper()
 	dir := t.TempDir()
-	db, err := database.Open(filepath.Join(dir, "identity.db"))
+	db, err := database.Open(filepath.Join(dir, "identityDB(identity)"))
 	if err != nil {
 		t.Fatal(err)
 	}
