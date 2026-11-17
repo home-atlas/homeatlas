@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: make test-deploy
       - run: bash -n deploy/proxmox/install.sh
       - run: shellcheck deploy/proxmox/install.sh
@@ -30,8 +30,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -46,14 +46,15 @@ jobs:
     outputs:
       release_tag: ${{ steps.package.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache-dependency-path: go.sum
       - name: Critical security and data flows
         run: make test-ci
       # Build assets here too so the production binary embeds the verified sources.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -90,13 +91,14 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      actions: read
     outputs:
       tag: ${{ steps.publish.outputs.tag }}
     steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: homeatlas-release
-          path: dist
+      - name: Download validated release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name homeatlas-release --dir dist
       - name: Verify release assets
         working-directory: dist
         run: sha256sum --check --strict SHA256SUMS
