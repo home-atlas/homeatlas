@@ -1,5 +1,6 @@
 /data/
 /bin/
+/dist/
 .DS_Store
 .env
 apps/web/node_modules/
