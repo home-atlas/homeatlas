@@ -799,36 +799,36 @@ func validatePartIDs(parts []snapshotPart) error {
 }
 
 // stageRestore adapts the SQL snapshot format to resource plans; no live writes occur here.
-func (b *householdBackups) stageRestore(ctx context.Context, s householdSnapshot, dir string) (plans []backup.Plan, err error) {
+func (b *householdBackups) stageRestore(ctx context.Context, s householdSnapshot, dir string, keepOld bool) (plans []backup.Plan, closer io.Closer, err error) {
 	source, err := openSnapshot(s.path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	defer source.Close()
 	defer func() {
 		if err != nil {
 			for i := len(plans) - 1; i >= 0; i-- {
-				plans[i].Finish(false, false)
+				plans[i].Finish(false, keepOld)
 			}
+			source.Close()
 		}
 	}()
 	for _, part := range s.parts {
 		participant, ok := b.snapshotParticipant(part)
 		if !ok || participant.Version() != part.Version {
-			return plans, errBackupModuleRequired
+			return plans, nil, errBackupModuleRequired
 		}
 		present, err := participant.Present(ctx, b.store.db)
 		if err != nil {
-			return plans, err
+			return plans, nil, err
 		}
 		if !present {
-			return plans, errBackupModuleRequired
+			return plans, nil, errBackupModuleRequired
 		}
 		plan, err := participant.Prepare(ctx, source, filepath.Join(dir, b.partPrefix(s.version, participant)), s.household.ID)
 		if err != nil {
-			return plans, err
+			return plans, nil, err
 		}
 		plans = append(plans, plan)
 	}
-	return plans, nil
+	return plans, source, nil
 }

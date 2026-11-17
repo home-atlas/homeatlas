@@ -354,3 +354,52 @@ func rewriteContractManifest(t *testing.T, data []byte, mutate func(*backupManif
 	}
 	return buf.Bytes()
 }
+
+// Lazy providers use the snapshot during Apply, after staging has returned.
+type lazyNotesBackup struct {
+	*notesBackup
+	source      backup.Queryer
+	finishError error
+	kept        bool
+}
+
+func (p *lazyNotesBackup) Prepare(_ context.Context, q backup.Queryer, _, _ string) (backup.Plan, error) {
+	p.source = q
+	return &lazyNotesPlan{provider: p}, nil
+}
+
+type lazyNotesPlan struct{ provider *lazyNotesBackup }
+
+func (p *lazyNotesPlan) Apply(ctx context.Context, tx *sql.Tx, rc backup.RestoreContext) error {
+	notes, err := readNotes(ctx, p.provider.source)
+	if err != nil {
+		return err
+	}
+	return (&notesPlan{provider: p.provider.notesBackup, notes: notes}).Apply(ctx, tx, rc)
+}
+func (p *lazyNotesPlan) Finish(committed, keepOld bool) {
+	_, p.provider.finishError = readNotes(context.Background(), p.provider.source)
+	p.provider.kept = keepOld
+	p.provider.finishes = append(p.provider.finishes, committed)
+}
+func TestBackupContractKeepsSnapshotOpenUntilPlansFinish(t *testing.T) {
+	f := newScheduleFixture(t, true)
+	notes := addNotes(t, f, true)
+	provider := &lazyNotesBackup{notesBackup: notes}
+	f.b.participants[len(f.b.participants)-1].Provider = provider
+	_, snapshot, dir := createContractArchive(t, f, 4)
+	if _, err := f.db.Exec("UPDATE contract_notes_live SET value='after'"); err != nil {
+		t.Fatal(err)
+	}
+	ctx := access.WithPrincipal(context.Background(), f.p)
+	if err := f.b.apply(ctx, snapshot, dir, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	assertNotesAndTitle(t, f, "before", "Manual privado")
+	if provider.finishError != nil || !provider.kept || !slices.Equal(provider.finishes, []bool{true}) {
+		t.Fatal("snapshot closed before finalization", provider.finishError, provider.finishes)
+	}
+	if _, err := readNotes(ctx, provider.source); err == nil {
+		t.Fatal("snapshot still open after finalization")
+	}
+}

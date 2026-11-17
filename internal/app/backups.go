@@ -479,10 +479,11 @@ func (b *householdBackups) restoreReport(s householdSnapshot) map[string]any {
 }
 
 func (b *householdBackups) apply(ctx context.Context, s householdSnapshot, dir string, keepOld bool, initialize func(unitofwork.Transaction) (access.Principal, error)) error {
-	plans, err := b.stageRestore(ctx, s, dir)
+	plans, source, err := b.stageRestore(ctx, s, dir, keepOld)
 	if err != nil {
 		return err
 	}
+	defer source.Close()
 	committed := false
 	defer func() {
 		for i := len(plans) - 1; i >= 0; i-- {
