@@ -20,10 +20,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: make test-deploy
-      - run: bash -n deploy/proxmox/install.sh
-      - run: shellcheck deploy/proxmox/install.sh
+      - run: bash -n deploy/systemd/install.sh
+      - run: shellcheck deploy/systemd/install.sh
       - run: sudo install -D /usr/bin/true /opt/homeatlas/current/homeatlas
-      - run: systemd-analyze verify deploy/proxmox/homeatlas.service
+      - run: systemd-analyze verify deploy/systemd/homeatlas.service
 
   web:
     name: Web tests and build
@@ -61,17 +61,22 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
       - run: npm --prefix apps/web ci
       - run: npm --prefix apps/web run build
-      - name: Build Linux amd64 executable
+      - name: Build Linux amd64 executable and license notices
         env:
           GOOS: linux
           GOARCH: amd64
           CGO_ENABLED: '0'
-        run: go build -tags production -o bin/homeatlas ./cmd/homeatlas
+        run: |
+          go build -tags production -o bin/homeatlas ./cmd/homeatlas
+          mkdir -p dist
+          python3 scripts/package-notices.py dist/licenses.zip
       - name: Package release assets
         id: package
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          printf 'tag=v%s-lab.%s\n' "$(node -p 'require("./apps/web/package.json").version')" "$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+          version=$(cat VERSION)
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo 'Invalid VERSION'; exit 1; }
+          printf 'tag=v%s-dev.%s\n' "$version" "$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
           mkdir -p dist
           make plugin-documents PACKAGE_OUT=dist/documents.hap
           cp bin/homeatlas dist/homeatlas
@@ -102,7 +107,7 @@ jobs:
       - name: Verify release assets
         working-directory: dist
         run: sha256sum --check --strict SHA256SUMS
-      - name: Create tag and publish lab release
+      - name: Create tag and publish development release
         id: publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -110,7 +115,7 @@ jobs:
         run: |
           gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" --title "$RELEASE_TAG" --generate-notes --prerelease \
-            dist/homeatlas dist/documents.hap dist/SHA256SUMS
+            dist/homeatlas dist/documents.hap dist/SHA256SUMS dist/licenses.zip
           printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
   deploy:

@@ -21,7 +21,7 @@ GO_TEST_TIMEOUT ?= 20m
 test: test-go test-wasi test-web test-deploy
 
 test-deploy:
-	python3 -m unittest discover -s deploy/proxmox -p 'test_*.py'
+	python3 -m unittest discover -s deploy/systemd -p 'test_*.py'
 
 test-go:
 	go test -race -timeout=$(GO_TEST_TIMEOUT) ./...
@@ -35,7 +35,7 @@ test-wasi:
 # Keep these explicit selectors aligned with test renames; make test remains exhaustive.
 CI_IDENTITY_TESTS := ^Test(SetupLoginRotationLogoutAndRestart|SetupIsAtomicAndSingleUse|SessionExpiryAndMembershipRevocation|HTTPSAndCrossOriginProtection|LocalRecoveryRevokesSessionsAndDoesNotChangeAccess|PINSessionCannotBecomeAdministrativeAfterPermissionChange|NewPasswordLengthBoundaries)$$
 CI_GUARD_TESTS := ^Test(SlowJSONBodyDoesNotFreezeOtherMutations|CancelledRequestsLeaveBackupQueues|JSONAdmissionPreservesBodyLimits|BackupExportDoesNotQueueDeclaredPluginQueries|BackupExportAllowsReadersButFreezesMutations|BackupRestoreStillExcludesReaders|SettingsAndModuleChangesAreAtomicAndProtectedFromCSRF)$$
-CI_APP_TESTS := ^Test(HTTPFoundation|StorageSettingsDefaultPermissionsCSRFAndValidation|EncryptedRestoreAuthenticatesAllBytesBeforeEitherImport|PersistentPluginExternalDocuments|PersistentPluginDocumentsAdoptsExistingSchema|PersistentPluginS3StorageSwitchBackupAndRecovery|PersistentPluginMoveOriginalsPreservesMetadataAndSharing)$$
+CI_APP_TESTS := ^Test(PersistentPluginPublicSDKExample|HTTPFoundation|StorageSettingsDefaultPermissionsCSRFAndValidation|EncryptedRestoreAuthenticatesAllBytesBeforeEitherImport|PersistentPluginExternalDocuments|PersistentPluginDocumentsAdoptsExistingSchema|PersistentPluginS3StorageSwitchBackupAndRecovery|PersistentPluginMoveOriginalsPreservesMetadataAndSharing)$$
 
 test-ci:
 	go test -race -timeout=$(GO_TEST_TIMEOUT) ./cmd/homeatlas ./plugins/documents \

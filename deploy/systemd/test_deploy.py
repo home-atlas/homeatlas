@@ -165,6 +165,24 @@ class DeployTests(unittest.TestCase):
 
 
 class HealthTests(unittest.TestCase):
+    def test_accepts_generic_https_origins_and_optional_ports(self):
+        for origin, host in [('https://homeatlas.example', 'homeatlas.example'),
+                             ('https://HomeAtlas.Example:443/', 'homeatlas.example'),
+                             ('https://homeatlas.example:9443/', 'homeatlas.example:9443'),
+                             ('https://192.0.2.1', '192.0.2.1'),
+                             ('https://[::1]:8443', '[::1]:8443'),
+                             ('https://labs.example.ts.net:8443', 'labs.example.ts.net:8443')]:
+            self.assertEqual(deploy.validate_origin(origin), host)
+
+    def test_rejects_unsafe_or_invalid_origins(self):
+        for origin in ['http://homeatlas.example', 'https://user:secret@homeatlas.example',
+                       'https://homeatlas.example/path', 'https://homeatlas.example?token=x',
+                       'https://homeatlas.example#x', 'https://homeatlas.example:0',
+                       'https://homeatlas.example:65536', 'https://homeatlas.example:bad', 'https://homeatlas.example:',
+                       'https://homeatlas.example\n', 'https://[invalid]', 'https://']:
+            with self.subTest(origin=origin), self.assertRaises(ValueError):
+                deploy.validate_origin(origin)
+
     def test_health_uses_loopback_with_configured_public_host(self):
         with patch.object(deploy.urllib.request, 'build_opener') as build:
             build.return_value.open.return_value.__enter__.return_value.status = 200
