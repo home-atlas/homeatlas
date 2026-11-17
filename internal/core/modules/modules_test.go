@@ -38,6 +38,26 @@ func (m dependent) Routes() []modules.Route                                     
 func (m dependent) SearchPermission() string                                       { return m.id + ".read" }
 func (m dependent) Search(context.Context, string) ([]modules.SearchResult, error) { return nil, nil }
 
+func TestRegistryRejectsCoreNamespaces(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "modules.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	r, err := modules.New(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"verify-email", "activate-access", "forgot-password", "home", "api", "core", "identity", "schema", "module", "plugin", "backups", "plugins", "plugin-files"} {
+		if err := r.Register(context.Background(), dependent{id: id}); err == nil {
+			t.Errorf("registered reserved ID %s", id)
+		}
+	}
+	if len(r.List()) != 0 {
+		t.Fatal("reserved modules persisted")
+	}
+}
+
 func TestHouseholdDependenciesAuthorizationAndInstallationBounds(t *testing.T) {
 	db, err := database.Open(filepath.Join(t.TempDir(), "modules.db"))
 	if err != nil {

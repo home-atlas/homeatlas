@@ -145,6 +145,46 @@ func TestPackageInstallApprovalIntegrityAndRestart(t *testing.T) {
 	}
 }
 
+func TestReservedCollectionIDsRejectedBeforeInstallation(t *testing.T) {
+	raw, err := os.ReadFile("../../../plugins/documents/manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var documents Manifest
+	if err := json.Unmarshal(raw, &documents); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"verify-email", "activate-access", "forgot-password", "home", "api"} {
+		t.Run(id, func(t *testing.T) {
+			data := packageBytes(t, command(`{"text":"ok"}`, false), func(m *Manifest) {
+				m.ID = id
+				m.Collection = documents.Collection
+				m.Collection.LegacySnapshot = false
+				m.Views = documents.Views
+			}, "")
+			if _, err := Read(data); err == nil {
+				t.Error("reserved package accepted")
+			}
+			dir := t.TempDir()
+			archive := filepath.Join(dir, "reserved.hap")
+			if err := os.WriteFile(archive, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			installed := filepath.Join(dir, "plugins")
+			allow := []string{id + ".read", id + ".write", id + ".share", id + ".files", id + ".collection"}
+			if _, err := Install(context.Background(), installed, archive, fmt.Sprintf("%x", sha256.Sum256(data)), allow); err == nil {
+				t.Error("reserved package installed")
+			}
+			if _, err := os.Stat(installed); !os.IsNotExist(err) {
+				t.Fatal("rejected installation changed plugin directory", err)
+			}
+			if loaded, err := Load(installed); err != nil || len(loaded) != 0 {
+				t.Fatal("rejected package broke restart", err)
+			}
+		})
+	}
+}
+
 func TestPackageRejectsPathsLimitsAndIncompatibleContracts(t *testing.T) {
 	wasm := command(`{"text":"ok"}`, false)
 	for _, mutate := range []func(*Manifest){func(m *Manifest) { m.ID = "auth" }, func(m *Manifest) { m.ContractVersion = "2" }, func(m *Manifest) { m.Storage = "household" }, func(m *Manifest) { m.WasmSHA256 = strings.Repeat("0", 64) }, func(m *Manifest) { m.Views[0].Fields[0].Type = "html" }, func(m *Manifest) { m.Views = append(m.Views, m.Views[0]) }} {

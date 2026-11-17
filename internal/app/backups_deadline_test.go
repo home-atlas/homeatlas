@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -62,12 +63,14 @@ func TestBackupResponseCanOutlastNormalServerWriteTimeout(t *testing.T) {
 }
 
 func TestReaderQueuedBehindRestoreGetsFreshResponseDeadline(t *testing.T) {
-	b := &householdBackups{}
-	b.mu.Lock()
+	b := newBackupGuard()
+	if err := b.resources.Acquire(context.Background(), backupLockCapacity); err != nil {
+		t.Fatal(err)
+	}
 	locked := true
 	defer func() {
 		if locked {
-			b.mu.Unlock()
+			b.resources.Release(backupLockCapacity)
 		}
 	}()
 	started := make(chan struct{})
@@ -95,7 +98,7 @@ func TestReaderQueuedBehindRestoreGetsFreshResponseDeadline(t *testing.T) {
 	}()
 	<-started
 	time.Sleep(60 * time.Millisecond)
-	b.mu.Unlock()
+	b.resources.Release(backupLockCapacity)
 	locked = false
 	if err := <-done; err != nil {
 		t.Fatal(err)
