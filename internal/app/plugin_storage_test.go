@@ -46,7 +46,12 @@ func installNotesPlugin(t *testing.T, dir string) {
 	if notesBuild.err != nil {
 		t.Fatal(notesBuild.err)
 	}
-	raw, err := os.ReadFile("../../internal/core/plugins/testdata/private-notes/manifest.json")
+	installNotesPackage(t, dir, notesBuild.wasm, "../../internal/core/plugins/testdata/private-notes/manifest.json")
+}
+
+func installNotesPackage(t *testing.T, dir string, wasm []byte, manifestPath string) {
+	t.Helper()
+	raw, err := os.ReadFile(manifestPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,14 +59,14 @@ func installNotesPlugin(t *testing.T, dir string) {
 	if err := json.Unmarshal(raw, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	manifest.WasmSHA256 = fmt.Sprintf("%x", sha256.Sum256(notesBuild.wasm))
+	manifest.WasmSHA256 = fmt.Sprintf("%x", sha256.Sum256(wasm))
 	raw, _ = json.Marshal(manifest)
 	var archive bytes.Buffer
 	z := zip.NewWriter(&archive)
 	w, _ := z.Create("manifest.json")
 	w.Write(raw)
 	w, _ = z.Create("plugin.wasm")
-	w.Write(notesBuild.wasm)
+	w.Write(wasm)
 	z.Close()
 	path := filepath.Join(t.TempDir(), "notes.hap")
 	if err := os.WriteFile(path, archive.Bytes(), 0600); err != nil {
@@ -227,4 +232,29 @@ func TestPersistentPluginNewInstallationRecoveryRemapsPrivateNamespaces(t *testi
 	if err := target.db.QueryRow(`SELECT count(*) FROM plugin_storage_records r JOIN plugin_storage_scopes s USING(plugin_id,household_id,member_id) LEFT JOIN identity_member_ids m ON m.id=s.member_id AND m.user_id=s.user_id AND m.household_id=s.household_id WHERE m.id IS NULL`).Scan(&bad); err != nil || bad != 0 {
 		t.Fatal("recovery retained historical membership", bad, err)
 	}
+}
+
+func TestPersistentPluginPublicSDKExample(t *testing.T) {
+	f := newCoreFixture(t, true)
+	f.app.Close()
+	output := filepath.Join(t.TempDir(), "public-example.wasm")
+	command := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", output, "./examples/private-notes")
+	command.Dir = "../.."
+	command.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm", "CGO_ENABLED=0", "GOFLAGS=")
+	if raw, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("public SDK example does not compile: %v: %s", err, raw)
+	}
+	wasm, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installNotesPackage(t, f.dataDir, wasm, "../../examples/private-notes/manifest.json")
+	reopenNotes(t, &f)
+	defer func() { f.app.Close() }()
+	noteAction(t, f, f.cookie, "save", map[string]string{"key": "example", "value": "A private example"})
+	assertNote(t, f, f.cookie, "example", "A private example")
+	f.app.Close()
+	reopenNotes(t, &f)
+	assertNote(t, f, f.cookie, "example", "A private example")
+	noteAction(t, f, f.cookie, "delete", map[string]string{"key": "example"})
 }

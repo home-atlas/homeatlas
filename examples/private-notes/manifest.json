@@ -1,0 +1,14 @@
+{
+  "contractVersion": "1",
+  "id": "ext-private-notes",
+  "name": "Mis notas privadas",
+  "version": "0.1.0",
+  "wasmSHA256": "filled-by-package-script",
+  "storage": "user",
+  "views": [
+    {"id": "save", "title": "Guardar nota", "description": "Solo tú puedes consultarlas desde este módulo. Se incluyen en las copias completas que puede crear el propietario del hogar.", "submitLabel": "Guardar", "fields": [{"name": "key", "label": "Clave de la nota", "type": "text", "required": true}, {"name": "value", "label": "Contenido", "type": "text", "required": true}]},
+    {"id": "read", "title": "Leer nota", "description": "Consulta una de tus notas por su clave.", "submitLabel": "Consultar", "readOnly": true, "fields": [{"name": "key", "label": "Clave de la nota", "type": "text", "required": true}]},
+    {"id": "list", "title": "Mis claves", "description": "Lista las claves de tus notas. Usa la continuación si hay más resultados.", "submitLabel": "Consultar claves", "readOnly": true, "fields": [{"name": "after", "label": "Continuar después de (opcional)", "type": "text", "required": false}]},
+    {"id": "delete", "title": "Retirar nota", "description": "Retira una nota de tu espacio privado.", "submitLabel": "Retirar", "fields": [{"name": "key", "label": "Clave de la nota", "type": "text", "required": true}]}
+  ]
+}

@@ -3,6 +3,7 @@
 import fcntl
 import grp
 import hashlib
+import ipaddress
 import os
 from pathlib import Path
 import re
@@ -15,6 +16,7 @@ import tarfile
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 RELEASES = Path('/opt/homeatlas/releases')
@@ -65,6 +67,21 @@ def switch(target):
     os.replace(temporary, CURRENT)
 
 
+def validate_origin(value):
+    if not re.fullmatch(r'https://[A-Za-z0-9.\-\[\]:]+/?', value):
+        raise ValueError('Expected an HTTPS origin without credentials, path, query or fragment')
+    parsed = urllib.parse.urlsplit(value)
+    if not parsed.hostname or parsed.port == 0 or parsed.netloc.endswith(':'):
+        raise ValueError('Invalid HTTPS origin')
+    if ':' in parsed.hostname:
+        host = '[' + ipaddress.IPv6Address(parsed.hostname).compressed + ']'
+    elif not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?', parsed.hostname):
+        raise ValueError('Invalid HTTPS hostname')
+    else:
+        host = parsed.hostname.lower()
+    return host + (':' + str(parsed.port) if parsed.port not in (None, 443) else '')
+
+
 def public_host():
     value = None
     for line in ENV_FILE.read_text().splitlines():
@@ -73,9 +90,9 @@ def public_host():
             if len(words) != 1:
                 raise ValueError('Invalid HOMEATLAS_PUBLIC_URL')
             value = words[0]
-    if value is None or not re.fullmatch(r'https://[a-zA-Z0-9][a-zA-Z0-9.-]*\.ts\.net:8443', value):
-        raise ValueError('Configure HOMEATLAS_PUBLIC_URL as https://VM.TAILNET.ts.net:8443')
-    return value.removeprefix('https://')
+    if value is None:
+        raise ValueError('Configure HOMEATLAS_PUBLIC_URL with your HTTPS origin')
+    return validate_origin(value)
 
 
 def healthy(host):

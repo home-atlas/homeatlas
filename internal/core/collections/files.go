@@ -3,8 +3,6 @@ package collections
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -13,7 +11,6 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
-	"log/slog"
 	"mime"
 	"net/http"
 	"os"
@@ -28,7 +25,6 @@ import (
 	"github.com/home-atlas/homeatlas/internal/core/access"
 	"github.com/home-atlas/homeatlas/internal/core/backup"
 	"github.com/home-atlas/homeatlas/internal/core/modules"
-	"github.com/home-atlas/homeatlas/internal/core/objectstore"
 )
 
 const MaxFileSize int64 = 20 << 20
@@ -103,44 +99,19 @@ func safeFilename(value string) bool {
 }
 
 func (m *Module) upload(w http.ResponseWriter, r *http.Request) {
-	select {
-	case m.uploads <- struct{}{}:
-		defer func() { <-m.uploads }()
-	default:
-		w.Header().Set("Retry-After", "1")
-		fail(w, 429, "uploads_busy")
+	u, err := m.beginUpload(r.Context())
+	if err != nil {
+		writeUploadError(w, err)
 		return
 	}
+	defer u.close()
 	r.Body = http.MaxBytesReader(w, r.Body, m.config.MaxFileBytes+(128<<10))
 	reader, err := r.MultipartReader()
 	if err != nil {
 		fail(w, 415, "multipart_required")
 		return
 	}
-	id := rand.Text()
-	var file *os.File
 	var raw []byte
-	var filename string
-	var size int64
-	var checksum string
-	// shortcut: a process crash can leave a private orphan; add reconciliation with backup/restore.
-	kept := false
-	var remote *objectstore.Pending
-	defer func() {
-		if remote != nil && !kept {
-			remote.Abort()
-		}
-	}()
-	defer func() {
-		if file != nil {
-			file.Close()
-			if !kept || remote != nil {
-				if err := m.files.Remove(id); err != nil && !errors.Is(err, os.ErrNotExist) {
-					slog.Error("remove uncommitted item", "id", id, "error", err)
-				}
-			}
-		}
-	}()
 	for {
 		part, err := reader.NextPart()
 		if err == io.EOF {
@@ -166,118 +137,60 @@ func (m *Module) upload(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case "file":
-			if file != nil {
+			if u.file != nil {
 				fail(w, 400, "invalid_upload")
 				return
 			}
 			_, disposition, err := mime.ParseMediaType(part.Header.Get("Content-Disposition"))
-			if err != nil || !safeFilename(disposition["filename"]) {
+			if err != nil {
 				fail(w, 400, "invalid_filename")
 				return
 			}
-			filename = disposition["filename"]
-			file, err = m.files.OpenFile(id, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
-			if err != nil {
-				fail(w, 500, "storage_unavailable")
+			if err := u.copyFile(disposition["filename"], part); err != nil {
+				writeUploadError(w, err)
 				return
 			}
-			digest := sha256.New()
-			size, err = io.Copy(io.MultiWriter(file, digest), io.LimitReader(part, m.config.MaxFileBytes+1))
-			if err != nil {
-				uploadError(w, err)
-				return
-			}
-			if size > m.config.MaxFileBytes {
-				fail(w, 413, "file_too_large")
-				return
-			}
-			if size == 0 {
-				fail(w, 400, "empty_file")
-				return
-			}
-			checksum = fmt.Sprintf("%x", digest.Sum(nil))
 		default:
 			fail(w, 400, "invalid_upload")
 			return
 		}
 		part.Close()
 	}
-	if file == nil || len(raw) == 0 {
-		fail(w, 400, "invalid_upload")
-		return
-	}
-	value, err := m.parseMetadata(r.Context(), raw)
+	item, err := u.commit(r.Context(), raw)
 	if err != nil {
-		metadataError(w, err)
+		writeUploadError(w, err)
 		return
 	}
-	mediaType, err := fileType(file, filename, size)
-	if err != nil || !slices.Contains(m.config.MediaTypes, mediaType) {
-		fail(w, 415, "unsupported_file_type")
+	w.Header().Set("Location", "/api/"+m.config.ID+"/"+item.ID)
+	modules.JSON(w, 201, item)
+}
+
+func writeUploadError(w http.ResponseWriter, err error) {
+	var failure *UploadError
+	if !errors.As(err, &failure) {
+		uploadError(w, err)
 		return
 	}
-	if err := file.Sync(); err != nil {
-		fail(w, 500, "storage_unavailable")
-		return
+	status, code := 500, failure.Code
+	switch code {
+	case "uploads_busy":
+		status = 429
+		w.Header().Set("Retry-After", "1")
+	case "invalid_upload", "invalid_filename", "empty_file", "invalid_metadata":
+		status = 400
+	case "permission_denied":
+		status = 403
+	case "file_too_large":
+		status = 413
+	case "unsupported_file_type":
+		status = 415
+	case "remote_storage_unavailable":
+		status, code = 503, "storage_unavailable"
+	case "plugin_unavailable":
+		status = 503
+		w.Header().Set("Retry-After", "1")
 	}
-	// Keep large collections from retaining every newly uploaded original in RAM.
-	backup.DiscardCache(file)
-	// Flush the directory entry before publishing its metadata in SQLite.
-	directory, err := m.files.Open(".")
-	if err != nil {
-		fail(w, 500, "storage_unavailable")
-		return
-	}
-	err = directory.Sync()
-	directory.Close()
-	if err != nil {
-		fail(w, 500, "storage_unavailable")
-		return
-	}
-	p, _ := access.Current(r.Context())
-	if m.config.Storage != nil {
-		remote, err = m.config.Storage.Upload(r.Context(), p.HouseholdID, m.config.ID, id, file, size, checksum)
-		if err != nil {
-			fail(w, 503, "storage_unavailable")
-			return
-		}
-	}
-	if err := file.Close(); err != nil {
-		fail(w, 500, "storage_unavailable")
-		return
-	}
-	tags, _ := json.Marshal(value.Tags)
-	d := Item{OwnerID: p.UserID, ID: id, Title: value.Title, Category: value.Category, Description: value.Description, Tags: value.Tags, Filename: filename, MediaType: mediaType, Size: size, SHA256: checksum, HasFile: true, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	tx, err := m.db.BeginTx(r.Context(), nil)
-	if err != nil {
-		fail(w, 500, "items_unavailable")
-		return
-	}
-	defer tx.Rollback()
-	if err := m.authorizeMutation(r.Context(), tx.Tx, "write"); err != nil {
-		fail(w, 403, "permission_denied")
-		return
-	}
-	_, err = tx.ExecContext(r.Context(), `INSERT INTO collection_items
-		(id,household_id,owner_id,title,category,created_at,description,tags,original_filename,media_type,size_bytes,sha256,file_key)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, p.HouseholdID, p.UserID, d.Title, d.Category, d.CreatedAt, d.Description, string(tags), filename, mediaType, size, checksum, id)
-	if err != nil {
-		fail(w, 500, "items_unavailable")
-		return
-	}
-	if remote != nil {
-		if err := remote.Publish(r.Context(), tx.Tx); err != nil {
-			fail(w, 500, "storage_unavailable")
-			return
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		fail(w, 500, "items_unavailable")
-		return
-	}
-	kept = true
-	w.Header().Set("Location", "/api/"+m.config.ID+"/"+id)
-	modules.JSON(w, 201, d)
+	fail(w, status, code)
 }
 
 func fileType(file *os.File, filename string, size int64) (string, error) {

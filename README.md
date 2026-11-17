@@ -21,7 +21,7 @@ HomeAtlas is a family platform you run on your own server to store documents, fi
 
 The core manages accounts, households and permissions. Product features arrive as independent plugins: **Documents** is the first and can be installed without rebuilding the core.
 
-> **Status:** active development. The plugin contract is experimental. The project's license has not yet been finalized; see [License](#license).
+> **Status:** active development. The plugin contract is experimental. Licensed under [Apache-2.0](LICENSE).
 
 ## Features
 
@@ -147,11 +147,14 @@ internal/app/         HTTP integration and application tests
 plugins/documents/    Documents plugin source and manifest
 sdk/pluginstorage/    Experimental WASI storage SDK
 scripts/              Packaging, verification and measurement tools
+examples/             Independently compiled SDK examples
+deploy/systemd/       Generic systemd installation and rollback
+docs/                 Public architecture, development and plugin contracts
 ```
 
 ## Optional Tailscale lab deployment
 
-[CI and release](.github/workflows/ci.yml) runs critical Go checks, all frontend tests and deployment checks once per workflow run. Pull requests validate only. A merge into `main` runs the same checks, builds Linux amd64 HomeAtlas and Documents, then automatically creates a tag and prerelease for that exact commit. Tags use `v<apps/web/package.json version>-lab.<workflow run number>`; the number can have gaps because PR checks also increment it. No manual tag is needed, and tag pushes do not start another pipeline. Feature branch pushes do not duplicate their PR's CI.
+[CI and release](.github/workflows/ci.yml) runs critical Go checks, all frontend tests and deployment checks once per workflow run. Pull requests validate only. A merge into `main` runs the same checks, builds Linux amd64 HomeAtlas and Documents, then automatically creates a tag and prerelease for that exact commit. Tags use `v<VERSION>-dev.<workflow run number>`, taking the product base version from the root `VERSION` file; the number can have gaps because PR checks also increment it. No manual tag is needed, and tag pushes do not start another pipeline. Feature branch pushes do not duplicate their PR's CI.
 
 Deployment is **disabled by default**, including in forks. CI and release publication do not require a VM or a Tailscale account. To enable automatic deployment after a successful release:
 
@@ -161,7 +164,7 @@ Deployment is **disabled by default**, including in forks. CI and release public
 
 When enabled, the same pipeline calls [Deploy lab](.github/workflows/deploy-lab.yml) through Tailscale SSH. No permanent Tailscale secret is stored in GitHub. Failed tests, builds or publication skip deployment; manually publishing a release does not trigger it. The exhaustive suite remains manual.
 
-The VM provisioning script and systemd service live in [deploy/proxmox](deploy/proxmox). HomeAtlas listens on `127.0.0.1:8090`; Tailscale Serve supplies private HTTPS on port 8443. Deployment retains a stopped local data copy and restores it with the previous executable if startup fails. This copy is sensitive and does not include remote S3 objects; keep encrypted application backups outside the VM.
+The generic installer and systemd service live in [deploy/systemd](deploy/systemd) and accept any valid HTTPS origin. Follow [generic systemd setup](docs/deployment/systemd.md) or the [optional Tailscale/Proxmox recipe](docs/deployment/tailscale.md). HomeAtlas listens on `127.0.0.1:8090`; Tailscale Serve supplies private HTTPS on port 8443. Deployment retains a stopped local data copy and restores it with the previous executable if startup fails. This copy is sensitive and does not include remote S3 objects; keep encrypted application backups outside the VM.
 
 ## Development
 
@@ -225,6 +228,10 @@ Configure the proxy to preserve the `Host` header. HTTPS is required outside loo
 
 SMTP is optional and disabled by default. See [.env.example](.env.example): HomeAtlas reads process environment variables and does not load `.env` files automatically.
 
+## Project documentation
+
+See the [documentation index](docs/README.md) for architecture and decisions, operating limits, version/release policy, installation and plugin contracts. Start plugin development with the [compilable private-notes SDK example](examples/private-notes/README.md).
+
 ## Roadmap
 
 - Reproducible distribution and deployment across more environments.
@@ -237,12 +244,12 @@ The runtime and plugins remain experimental. S3 tests use a local TLS test serve
 
 ## Contributing
 
-Bug reports, documentation improvements and code contributions are welcome. Include reproduction steps and describe the expected behavior; for larger changes, explain the proposed scope first.
+Bug reports, documentation improvements and code contributions are welcome. Follow [CONTRIBUTING](CONTRIBUTING.md), [development checks](docs/development/README.md) and the [private security reporting policy](SECURITY.md). Include reproduction steps and describe the expected behavior; for larger changes, explain the proposed scope first.
 
 Run `make test` before submitting changes. Preserve data and permission compatibility, add tests for new behavior and use shared interface components. Do not commit credentials, household data, caches or build artifacts.
 
 ## License
 
-HomeAtlas's license has not yet been selected. This repository does not currently include a project-level `LICENSE` file.
+HomeAtlas is licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE) and [third-party notices](THIRD_PARTY_NOTICES.md). Releases include `licenses.zip`; retain its applicable notices when redistributing the executable or packages.
 
 Dependencies and third-party components retain their own licenses; the shadcn-vue component license is included [alongside its source](apps/web/src/components/ui/LICENSE.shadcn-vue).
