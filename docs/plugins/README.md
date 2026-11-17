@@ -6,7 +6,7 @@ A plugin is a locally approved WASI Preview 1 command. It ships declarative data
 
 A `.hap` is a ZIP containing exactly two regular files at its root: `manifest.json` (up to 32 KiB) and `plugin.wasm` (up to 8 MiB). The complete archive is at most 10 MiB. Extra names, directories, duplicates, paths, invalid JSON and unknown manifest fields are rejected. The packager fills `wasmSHA256`; the CLI also requires the SHA-256 of the entire `.hap` and an exact capability approval list. Integrity approval does not authenticate a publisher.
 
-Stop HomeAtlas before CLI installation. An existing plugin ID cannot be overwritten by `plugins install`; managed update/uninstall and hot loading are not implemented. The host validates packages and approval receipts on each startup. Keep exact approved packages for backup recovery, and restart after installing a new one. Installing grants no account permissions automatically.
+Stop HomeAtlas before CLI installation. An existing plugin ID cannot be overwritten by `plugins install`; managed update/uninstall and hot loading are not implemented. The host validates packages and approval receipts on each startup. Keep exact approved packages for backup recovery, and restart after installing a new one. On first activation of a newly installed package, the application seeds its declared account capabilities for household owners according to installation policy. Other members need explicit grants; restarting does not reapply a revoked grant.
 
 ## Manifest
 
