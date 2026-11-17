@@ -102,3 +102,42 @@ func TestIdentityApplicationPreservesMemberTransaction(t *testing.T) {
 		})
 	}
 }
+
+type sessionRepository struct {
+	Repository
+	session *Session
+	failure error
+}
+
+func (s *sessionRepository) readSessionRecord(_ context.Context, _ []byte, now int64) (*Session, int64, error) {
+	return s.session, now, s.failure
+}
+func TestIdentityAuthenticationWithoutHTTP(t *testing.T) {
+	record := &Session{User: User{ID: "reader"}, Household: Household{ID: "home"}, MembershipID: "reader-current", Permissions: []string{"documents.read"}}
+	store := &sessionRepository{session: record}
+	app := &Application{store: store}
+	// Previous trusted context must never add permissions to a newly authenticated session.
+	prior := access.WithPrincipal(context.Background(), access.Principal{UserID: "owner", HouseholdID: "other", MembershipID: "owner-current", Permissions: map[string]bool{Manage: true}})
+	ctx, err := app.Authenticate(prior, randomCode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, ok := access.Current(ctx)
+	if !ok || p.UserID != "reader" || p.HouseholdID != "home" || p.MembershipID != "reader-current" || access.Allows(ctx, Manage) || !access.Allows(ctx, "documents.read") {
+		t.Fatal("authentication inherited another identity", p)
+	}
+	if current, _ := ctx.Value(sessionKey{}).(*Session); current != record {
+		t.Fatal("application session context missing")
+	}
+	store.failure = unitofwork.ErrNotFound
+	failed, err := app.Authenticate(ctx, randomCode())
+	if !errors.Is(err, unitofwork.ErrNotFound) {
+		t.Fatal(err)
+	}
+	if _, ok := access.Current(failed); ok {
+		t.Fatal("failed authentication retained principal")
+	}
+	if current, _ := failed.Value(sessionKey{}).(*Session); current != nil {
+		t.Fatal("failed authentication retained session")
+	}
+}

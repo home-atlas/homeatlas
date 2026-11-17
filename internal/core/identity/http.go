@@ -1,7 +1,6 @@
 package identity
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -101,7 +100,7 @@ func (s *httpTransport) Middleware(next http.Handler) http.Handler {
 		}
 		ctx := access.WithPrincipal(r.Context(), access.Principal{})
 		if cookie, err := r.Cookie(s.cookieName); err == nil {
-			current, err := s.load(r.Context(), cookie.Value)
+			authenticated, err := s.Authenticate(ctx, cookie.Value)
 			switch {
 			case errors.Is(err, unitofwork.ErrNotFound):
 				s.clearCookie(w)
@@ -109,12 +108,7 @@ func (s *httpTransport) Middleware(next http.Handler) http.Handler {
 				fail(w, 503, "session_unavailable")
 				return
 			default:
-				grants := make(map[string]bool, len(current.Permissions))
-				for _, permission := range current.Permissions {
-					grants[permission] = true
-				}
-				ctx = access.WithPrincipal(ctx, access.Principal{MembershipID: current.MembershipID, UserID: current.User.ID, HouseholdID: current.Household.ID, Permissions: grants})
-				ctx = context.WithValue(ctx, sessionKey{}, current)
+				ctx = authenticated
 			}
 		}
 		next.ServeHTTP(w, r.WithContext(ctx))
