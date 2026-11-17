@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,12 +13,13 @@ import (
 	"github.com/home-atlas/homeatlas/internal/core/identity"
 	"github.com/home-atlas/homeatlas/internal/core/modules"
 	"github.com/home-atlas/homeatlas/internal/core/objectstore"
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
 )
 
 var errStorageDenied = errors.New("storage permission denied")
 
 func mountStorage(mux *http.ServeMux, store *objectstore.Store, members access.Directory, collections []objectstore.Collection) {
-	authorize := func(ctx context.Context, tx *sql.Tx) error {
+	authorize := func(ctx context.Context, tx unitofwork.Transaction) error {
 		p, ok := access.Current(ctx)
 		if !ok {
 			return errStorageDenied
@@ -70,7 +70,7 @@ func mountStorage(mux *http.ServeMux, store *objectstore.Store, members access.D
 				storageError(w, objectstore.Invalid)
 				return
 			}
-			result, err := store.MoveNext(ctx, p.HouseholdID, input.Revision, collections, func(tx *sql.Tx) error { return authorize(ctx, tx) })
+			result, err := store.MoveNext(ctx, p.HouseholdID, input.Revision, collections, func(tx unitofwork.Transaction) error { return authorize(ctx, tx) })
 			if err != nil {
 				storageError(w, err)
 				return
@@ -90,7 +90,7 @@ func mountStorage(mux *http.ServeMux, store *objectstore.Store, members access.D
 				storageError(w, objectstore.Invalid)
 				return
 			}
-			if err := store.Save(ctx, p.HouseholdID, input, func(tx *sql.Tx) error { return authorize(ctx, tx) }); err != nil {
+			if err := store.Save(ctx, p.HouseholdID, input, func(tx unitofwork.Transaction) error { return authorize(ctx, tx) }); err != nil {
 				storageError(w, err)
 				return
 			}
@@ -114,7 +114,7 @@ func storageError(w http.ResponseWriter, err error) {
 		status, code = 400, "invalid_storage_settings"
 	case errors.Is(err, objectstore.Conflict):
 		status, code = 409, "storage_settings_changed"
-	case errors.Is(err, errStorageDenied), errors.Is(err, sql.ErrNoRows):
+	case errors.Is(err, errStorageDenied), errors.Is(err, unitofwork.ErrNotFound):
 		status, code = 403, "permission_denied"
 	}
 	modules.JSON(w, status, map[string]string{"error": code})

@@ -2,7 +2,8 @@ package access
 
 import (
 	"context"
-	"database/sql"
+
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
 )
 
 // Member identifies one continuous period of access to a household.
@@ -20,5 +21,5 @@ type Member struct {
 
 // Directory is the Core boundary used by modules; its tables remain private.
 type Directory interface {
-	Member(context.Context, *sql.Tx, string, string) (Member, error)
+	Member(context.Context, unitofwork.Transaction, string, string) (Member, error)
 }

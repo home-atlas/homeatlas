@@ -1,18 +1,18 @@
 package identity
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"net/http"
 	"strings"
 	"time"
 
 	"github.com/home-atlas/homeatlas/internal/core/access"
-	"github.com/home-atlas/homeatlas/internal/core/modules"
+	"github.com/home-atlas/homeatlas/internal/core/fault"
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
 )
 
 const invitationLifetime = 72 * time.Hour
@@ -28,28 +28,6 @@ type invitation struct {
 	expires, accepted, revoked                     int64
 }
 
-const invitationColumns = `i.id,i.email,i.role,i.permissions,i.household_id,i.issuer_id,i.issuer_member_id,i.expires_at,i.accepted_at,i.revoked_at,h.name`
-
-func readInvitation(row interface{ Scan(...any) error }) (invitation, error) {
-	var i invitation
-	var permissions string
-	err := row.Scan(&i.ID, &i.Email, &i.Role, &permissions, &i.household, &i.issuer, &i.issuerMember, &i.expires, &i.accepted, &i.revoked, &i.householdName)
-	if err == nil {
-		err = json.Unmarshal([]byte(permissions), &i.Permissions)
-	}
-	i.ExpiresAt = time.Unix(i.expires, 0).UTC()
-	i.Status = "pending"
-	if i.expires <= time.Now().Unix() {
-		i.Status = "expired"
-	}
-	if i.revoked != 0 {
-		i.Status = "revoked"
-	}
-	if i.accepted != 0 {
-		i.Status = "accepted"
-	}
-	return i, err
-}
 func tokenDigest(token string) ([]byte, bool) {
 	raw, err := base64.RawURLEncoding.DecodeString(token)
 	if len(token) != 43 || err != nil || len(raw) != 32 {
@@ -58,112 +36,83 @@ func tokenDigest(token string) ([]byte, bool) {
 	digest := sha256.Sum256([]byte(token))
 	return digest[:], true
 }
-func (s *Service) invitations(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.actor(w, r, nil); !ok {
-		return
+func (s *Application) Invitations(ctx context.Context, client Client) (Result, error) {
+	result := Result{}
+
+	if _, err := s.actor(ctx, nil); err != nil {
+		return result, err
 	}
-	p, _ := access.Current(r.Context())
-	rows, err := s.db.QueryContext(r.Context(), `SELECT `+invitationColumns+` FROM identity_invitations i JOIN identity_households h ON h.id=i.household_id WHERE i.household_id=? ORDER BY i.created_at DESC,i.id LIMIT 100`, p.HouseholdID)
+	p, _ := access.Current(ctx)
+	items, err := s.store.readInvitations(ctx, p.HouseholdID)
 	if err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
-	defer rows.Close()
-	items := []invitation{}
-	for rows.Next() {
-		i, err := readInvitation(rows)
-		if err != nil {
-			fail(w, 503, "invitations_unavailable")
-			return
-		}
-		items = append(items, i)
-	}
-	if rows.Err() != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
-	}
-	modules.JSON(w, 200, items)
+	result.Data = items
+
+	return result, nil
 }
-func (s *Service) invite(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Email       string   `json:"email"`
-		Role        string   `json:"role"`
-		Permissions []string `json:"permissions"`
-		SendEmail   bool     `json:"sendEmail"`
-	}
-	if !decode(w, r, &input) {
-		return
-	}
+func (s *Application) Invite(ctx context.Context, client Client, input InviteInput) (Result, error) {
+	result := Result{}
+
 	email, ok := normalizeEmail(input.Email)
 	if !ok {
-		fail(w, 400, "invalid_email")
-		return
+		return result, fault.New(fault.Invalid, "invalid_email")
 	}
-	if _, ok := s.actor(w, r, nil); !ok {
-		return
+	if _, err := s.actor(ctx, nil); err != nil {
+		return result, err
 	}
-	if !s.limit(w, r, "invite:"+email) {
-		return
+	if err := s.limit(ctx, client, "invite:"+email); err != nil {
+		return result, err
 	}
-	tx, err := s.db.BeginTx(r.Context(), nil)
+	tx, err := s.store.Begin(ctx)
 	if err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
 	defer tx.Rollback()
-	actor, ok := s.actor(w, r, tx)
-	if !ok {
-		return
+	actor, err := s.actor(ctx, tx)
+	if err != nil {
+		return result, err
 	}
-	p, _ := access.Current(r.Context())
+	p, _ := access.Current(ctx)
 	permissions, ok := s.grant(actor, input.Role, input.Permissions)
 	if !ok {
-		fail(w, 403, "invalid_grant")
-		return
+		return result, fault.New(fault.Denied, "invalid_grant")
 	}
 	var exists bool
-	if err := tx.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM identity_memberships m JOIN identity_users u ON u.id=m.user_id WHERE m.household_id=? AND u.email=?)`, p.HouseholdID, email).Scan(&exists); err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+	if err := s.store.isExistingHouseholdMember(ctx, tx, p.HouseholdID, email, &exists); err != nil {
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
 	if exists {
-		fail(w, 409, "already_member")
-		return
+		return result, fault.New(fault.Conflict, "already_member")
 	}
 	if actor.Role != "owner" {
 		var protected bool
-		if err := tx.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM identity_invitations WHERE household_id=? AND email=? AND role='admin' AND accepted_at=0 AND revoked_at=0 AND expires_at>?)`, p.HouseholdID, email, time.Now().Unix()).Scan(&protected); err != nil {
-			fail(w, 503, "invitations_unavailable")
-			return
+		if err := s.store.hasProtectedAdminInvitation(ctx, tx, p.HouseholdID, email, time.Now().Unix(), &protected); err != nil {
+			return result, fault.New(fault.Unavailable, "invitations_unavailable")
 		}
 		if protected {
-			fail(w, 403, "permission_denied")
-			return
+			return result, fault.New(fault.Denied, "permission_denied")
 		}
 	}
 	now := time.Now().Unix()
 	// Reissuing revokes the previous link for this email without storing either raw token.
-	if _, err := tx.ExecContext(r.Context(), `UPDATE identity_invitations SET revoked_at=? WHERE household_id=? AND email=? AND accepted_at=0 AND revoked_at=0`, now, p.HouseholdID, email); err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+	if _, err := s.store.revokePreviousInvitations(ctx, tx, now, p.HouseholdID, email); err != nil {
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
 	bytes := make([]byte, 32)
 	if _, err := rand.Read(bytes); err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
 	token := base64.RawURLEncoding.EncodeToString(bytes)
 	digest, _ := tokenDigest(token)
 	id := rand.Text()
 	encoded, _ := json.Marshal(permissions)
-	_, err = tx.ExecContext(r.Context(), `INSERT INTO identity_invitations(id,household_id,email,role,permissions,token_hash,issuer_id,issuer_member_id,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, id, p.HouseholdID, email, input.Role, string(encoded), digest, actor.ID, actor.MembershipID, now, now+int64(invitationLifetime.Seconds()))
+	_, err = s.store.insertInvitation(ctx, tx, id, p.HouseholdID, email, input.Role, string(encoded), digest, actor.ID, actor.MembershipID, now, now+int64(invitationLifetime.Seconds()))
 	if err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
 	if err := tx.Commit(); err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
 	url := s.origin.String() + "/join#" + token
 	emailStatus := "manual"
@@ -172,57 +121,55 @@ func (s *Service) invite(w http.ResponseWriter, r *http.Request) {
 		if s.mailer != nil {
 			body := "Te han invitado a un hogar en HomeAtlas. Revisa y acepta la invitación aquí:\n\n" + url + "\n\nCaduca en 72 horas y solo puede usarse una vez. Si no esperabas esta invitación, ignora este mensaje.\n"
 			emailStatus = "sent"
-			if err := s.mailer.Send(r.Context(), email, "Invitación a un hogar en HomeAtlas", body); err != nil {
+			if err := s.mailer.Send(ctx, email, "Invitación a un hogar en HomeAtlas", body); err != nil {
 				emailStatus = "failed"
 			}
 		}
 	}
-	modules.JSON(w, 201, map[string]any{"id": id, "url": url, "emailStatus": emailStatus, "expiresAt": time.Unix(now+int64(invitationLifetime.Seconds()), 0).UTC()})
+	result.Data = map[string]any{"id": id, "url": url, "emailStatus": emailStatus, "expiresAt": time.Unix(now+int64(invitationLifetime.Seconds()), 0).UTC()}
+
+	return result, nil
 }
-func (s *Service) revokeInvitation(w http.ResponseWriter, r *http.Request) {
-	tx, err := s.db.BeginTx(r.Context(), nil)
+func (s *Application) RevokeInvitation(ctx context.Context, client Client, target string) (Result, error) {
+	result := Result{}
+
+	tx, err := s.store.Begin(ctx)
 	if err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
 	defer tx.Rollback()
-	actor, ok := s.actor(w, r, tx)
-	if !ok {
-		return
+	actor, err := s.actor(ctx, tx)
+	if err != nil {
+		return result, err
 	}
-	p, _ := access.Current(r.Context())
-	i, err := readInvitation(tx.QueryRowContext(r.Context(), `SELECT `+invitationColumns+` FROM identity_invitations i JOIN identity_households h ON h.id=i.household_id WHERE i.id=? AND i.household_id=?`, r.PathValue("id"), p.HouseholdID))
-	if errors.Is(err, sql.ErrNoRows) {
-		fail(w, 404, "invitation_not_found")
-		return
+	p, _ := access.Current(ctx)
+	i, err := s.store.readInvitationForRevocation(ctx, tx, target, p.HouseholdID)
+	if errors.Is(err, unitofwork.ErrNotFound) {
+		return result, fault.New(fault.Missing, "invitation_not_found")
 	}
 	if err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
 	if actor.Role != "owner" && i.Role == "admin" {
-		fail(w, 403, "permission_denied")
-		return
+		return result, fault.New(fault.Denied, "permission_denied")
 	}
-	if _, err := tx.ExecContext(r.Context(), `UPDATE identity_invitations SET revoked_at=? WHERE id=? AND household_id=? AND accepted_at=0`, time.Now().Unix(), i.ID, p.HouseholdID); err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+	if _, err := s.store.revokeInvitationRecord(ctx, tx, time.Now().Unix(), i.ID, p.HouseholdID); err != nil {
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
 	if err := tx.Commit(); err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(204)
+
+	return result, nil
 }
 
-func (s *Service) validInvitation(r *http.Request, tx *sql.Tx, token string) (invitation, bool, error) {
+func (s *Application) validInvitation(ctx context.Context, tx unitofwork.Transaction, token string) (invitation, bool, error) {
 	digest, ok := tokenDigest(token)
 	if !ok {
 		return invitation{}, false, nil
 	}
-	i, err := readInvitation(tx.QueryRowContext(r.Context(), `SELECT `+invitationColumns+` FROM identity_invitations i JOIN identity_households h ON h.id=i.household_id WHERE i.token_hash=?`, digest))
-	if errors.Is(err, sql.ErrNoRows) {
+	i, err := s.store.readInvitationByDigest(ctx, tx, digest)
+	if errors.Is(err, unitofwork.ErrNotFound) {
 		return i, false, nil
 	}
 	if err != nil {
@@ -231,8 +178,8 @@ func (s *Service) validInvitation(r *http.Request, tx *sql.Tx, token string) (in
 	if i.Status != "pending" {
 		return i, false, nil
 	}
-	issuer, err := s.Member(r.Context(), tx, i.household, i.issuer)
-	if errors.Is(err, sql.ErrNoRows) {
+	issuer, err := s.Member(ctx, tx, i.household, i.issuer)
+	if errors.Is(err, unitofwork.ErrNotFound) {
 		return i, false, nil
 	}
 	if err != nil {
@@ -241,187 +188,150 @@ func (s *Service) validInvitation(r *http.Request, tx *sql.Tx, token string) (in
 	_, allowed := s.grant(issuer, i.Role, normalizedPermissions(i.Permissions))
 	return i, allowed && issuer.MembershipID == i.issuerMember, nil
 }
-func (s *Service) inspectInvitation(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Token string `json:"token"`
-	}
-	if !decode(w, r, &input) {
-		return
-	}
-	tx, err := s.db.BeginTx(r.Context(), nil)
+func (s *Application) InspectInvitation(ctx context.Context, client Client, input InspectInvitationInput) (Result, error) {
+	result := Result{}
+
+	tx, err := s.store.Begin(ctx)
 	if err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
 	defer tx.Rollback()
-	i, ok, err := s.validInvitation(r, tx, input.Token)
+	i, ok, err := s.validInvitation(ctx, tx, input.Token)
 	if err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
 	if !ok {
-		fail(w, 410, "invitation_unavailable")
-		return
+		return result, fault.New(fault.Expired, "invitation_unavailable")
 	}
 	var exists bool
-	if err := tx.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM identity_users WHERE email=?)`, i.Email).Scan(&exists); err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+	if err := s.store.invitationAccountExists(ctx, tx, i.Email, &exists); err != nil {
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
-	modules.JSON(w, 200, map[string]any{"email": i.Email, "householdName": i.householdName, "role": i.Role, "permissions": i.Permissions, "expiresAt": i.ExpiresAt, "needsAccount": !exists})
+	result.Data = map[string]any{"email": i.Email, "householdName": i.householdName, "role": i.Role, "permissions": i.Permissions, "expiresAt": i.ExpiresAt, "needsAccount": !exists}
+
+	return result, nil
 }
-func (s *Service) acceptInvitation(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Token    string `json:"token"`
-		Name     string `json:"name"`
-		Password string `json:"password"`
-	}
-	if !decode(w, r, &input) {
-		return
-	}
-	if !s.acquire(w) {
-		return
+func (s *Application) AcceptInvitation(ctx context.Context, client Client, input AcceptInvitationInput) (Result, error) {
+	result := Result{}
+
+	if err := s.acquire(); err != nil {
+		return result, err
 	}
 	defer func() { <-s.work }()
 	// Validate before password work, then recheck under the acceptance transaction.
-	tx, err := s.db.BeginTx(r.Context(), nil)
+	tx, err := s.store.Begin(ctx)
 	if err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
-	i, ok, err := s.validInvitation(r, tx, input.Token)
+	i, ok, err := s.validInvitation(ctx, tx, input.Token)
 	tx.Rollback()
 	if err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
 	if !ok {
-		fail(w, 410, "invitation_unavailable")
-		return
+		return result, fault.New(fault.Expired, "invitation_unavailable")
 	}
-	if !s.limit(w, r, i.Email) {
-		return
+	if err := s.limit(ctx, client, i.Email); err != nil {
+		return result, err
 	}
 	var userID, stored string
-	err = s.db.QueryRowContext(r.Context(), `SELECT id,password_hash FROM identity_users WHERE email=?`, i.Email).Scan(&userID, &stored)
-	newUser := errors.Is(err, sql.ErrNoRows)
+	err = s.store.readInvitedAccount(ctx, nil, i.Email, &userID, &stored)
+	newUser := errors.Is(err, unitofwork.ErrNotFound)
 	if err != nil && !newUser {
-		fail(w, 503, "invitations_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
-	current, _ := r.Context().Value(sessionKey{}).(*Session)
+	current, _ := ctx.Value(sessionKey{}).(*Session)
 	if current != nil && current.User.Email != i.Email {
-		fail(w, 403, "invitation_account_mismatch")
-		return
+		return result, fault.New(fault.Denied, "invitation_account_mismatch")
 	}
 	if newUser {
 		input.Name = strings.TrimSpace(input.Name)
 		if !validText(input.Name, 80) || !validNewPassword(input.Password) {
-			fail(w, 400, "invalid_account")
-			return
+			return result, fault.New(fault.Invalid, "invalid_account")
 		}
 		stored, err = hashPassword(input.Password)
 		if err != nil {
-			fail(w, 503, "invitations_unavailable")
-			return
+			return result, fault.New(fault.Unavailable, "invitations_unavailable")
 		}
 		userID = rand.Text()
 	} else if current == nil {
 		if len(input.Password) == 0 || len(input.Password) > 512 || !verifyPassword(input.Password, stored) {
-			fail(w, 401, "invalid_credentials")
-			return
+			return result, fault.New(fault.Unauthenticated, "invalid_credentials")
 		}
 	}
-	tx, err = s.db.BeginTx(r.Context(), nil)
+	tx, err = s.store.Begin(ctx)
 	if err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
 	defer tx.Rollback()
-	fresh, ok, err := s.validInvitation(r, tx, input.Token)
+	fresh, ok, err := s.validInvitation(ctx, tx, input.Token)
 	if err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
 	if !ok {
-		fail(w, 410, "invitation_unavailable")
-		return
+		return result, fault.New(fault.Expired, "invitation_unavailable")
 	}
 	// Account state may have changed during the password derivation; never reset an existing account.
 	if !newUser {
 		var unchanged bool
-		if err := tx.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM identity_users WHERE id=? AND password_hash=?)`, userID, stored).Scan(&unchanged); err != nil {
-			fail(w, 503, "invitations_unavailable")
-			return
+		if err := s.store.invitedAccountUnchanged(ctx, tx, userID, stored, &unchanged); err != nil {
+			return result, fault.New(fault.Unavailable, "invitations_unavailable")
 		}
 		if current != nil {
-			cookie, err := r.Cookie(s.cookieName)
-			if err != nil {
-				fail(w, 401, "invalid_credentials")
-				return
+			if !client.HasSession {
+				return result, fault.New(fault.Unauthenticated, "invalid_credentials")
 			}
-			digest := sha256.Sum256([]byte(cookie.Value))
+			digest := sha256.Sum256([]byte(client.SessionToken))
 			var active bool
-			if err := tx.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM identity_sessions WHERE token_hash=? AND user_id=? AND expires_at>? AND last_seen>?)`, digest[:], userID, time.Now().Unix(), time.Now().Unix()-int64(sessionIdle.Seconds())).Scan(&active); err != nil {
-				fail(w, 503, "invitations_unavailable")
-				return
+			if err := s.store.isInvitedSessionActive(ctx, tx, digest[:], userID, time.Now().Unix(), time.Now().Unix()-int64(sessionIdle.Seconds()), &active); err != nil {
+				return result, fault.New(fault.Unavailable, "invitations_unavailable")
 			}
 			unchanged = unchanged && active
 		}
 		if !unchanged {
-			fail(w, 401, "invalid_credentials")
-			return
+			return result, fault.New(fault.Unauthenticated, "invalid_credentials")
 		}
 	}
 	if newUser {
 		var exists bool
-		if err := tx.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM identity_users WHERE email=?)`, fresh.Email).Scan(&exists); err != nil {
-			fail(w, 503, "invitations_unavailable")
-			return
+		if err := s.store.isInvitedMailboxTaken(ctx, tx, fresh.Email, &exists); err != nil {
+			return result, fault.New(fault.Unavailable, "invitations_unavailable")
 		}
 		if exists {
-			fail(w, 409, "account_changed")
-			return
+			return result, fault.New(fault.Conflict, "account_changed")
 		}
-		if _, err := tx.ExecContext(r.Context(), `INSERT INTO identity_users(id,name,email,password_hash) VALUES(?,?,?,?)`, userID, input.Name, fresh.Email, stored); err != nil {
-			fail(w, 503, "invitations_unavailable")
-			return
+		if _, err := s.store.insertInvitedAccount(ctx, tx, userID, input.Name, fresh.Email, stored); err != nil {
+			return result, fault.New(fault.Unavailable, "invitations_unavailable")
 		}
 	}
 	var exists bool
-	if err := tx.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM identity_memberships WHERE household_id=? AND user_id=?)`, fresh.household, userID).Scan(&exists); err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+	if err := s.store.hasInvitedMembership(ctx, tx, fresh.household, userID, &exists); err != nil {
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
 	if exists {
-		fail(w, 409, "already_member")
-		return
+		return result, fault.New(fault.Conflict, "already_member")
 	}
-	if _, err := tx.ExecContext(r.Context(), `INSERT INTO identity_memberships VALUES(?,?,?)`, userID, fresh.household, fresh.Role); err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+	if _, err := s.store.insertInvitedMembership(ctx, tx, userID, fresh.household, fresh.Role); err != nil {
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
-	if err := setPermissions(r.Context(), tx, fresh.household, userID, fresh.Permissions); err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+	if err := s.setPermissions(ctx, tx, fresh.household, userID, fresh.Permissions); err != nil {
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
-	result, err := tx.ExecContext(r.Context(), `UPDATE identity_invitations SET accepted_at=? WHERE id=? AND accepted_at=0 AND revoked_at=0 AND expires_at>?`, time.Now().Unix(), fresh.ID, time.Now().Unix())
+	mutation, err := s.store.claimInvitation(ctx, tx, time.Now().Unix(), fresh.ID, time.Now().Unix())
 	if err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
-	if count, err := result.RowsAffected(); err != nil || count != 1 {
-		fail(w, 410, "invitation_unavailable")
-		return
+	if count, err := mutation.Affected, mutation.CountError; err != nil || count != 1 {
+		return result, fault.New(fault.Expired, "invitation_unavailable")
 	}
-	token, err := s.createSession(r.Context(), tx, r, userID, fresh.household)
+	token, err := s.createSession(ctx, tx, client, userID, fresh.household)
 	if err != nil {
-		fail(w, 503, "session_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "session_unavailable")
 	}
 	if err := tx.Commit(); err != nil {
-		fail(w, 503, "invitations_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "invitations_unavailable")
 	}
-	s.respondSession(w, r, token, 201)
+	result.SessionToken = token
+
+	return result, nil
 }

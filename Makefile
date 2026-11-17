@@ -33,12 +33,13 @@ test-wasi:
 
 # Push/PR profile: cheap units with race plus selected real security/data flows.
 # Keep these explicit selectors aligned with test renames; make test remains exhaustive.
-CI_IDENTITY_TESTS := ^Test(SetupLoginRotationLogoutAndRestart|SetupIsAtomicAndSingleUse|SessionExpiryAndMembershipRevocation|HTTPSAndCrossOriginProtection|LocalRecoveryRevokesSessionsAndDoesNotChangeAccess|PINSessionCannotBecomeAdministrativeAfterPermissionChange|NewPasswordLengthBoundaries)$$
-CI_GUARD_TESTS := ^Test(SlowJSONBodyDoesNotFreezeOtherMutations|CancelledRequestsLeaveBackupQueues|JSONAdmissionPreservesBodyLimits|BackupExportDoesNotQueueDeclaredPluginQueries|BackupExportAllowsReadersButFreezesMutations|BackupRestoreStillExcludesReaders|SettingsAndModuleChangesAreAtomicAndProtectedFromCSRF)$$
+CI_IDENTITY_TESTS := ^Test(IdentityAuthenticationWithoutHTTP|IdentityApplicationPreservesMemberTransaction|SetupLoginRotationLogoutAndRestart|SetupIsAtomicAndSingleUse|SessionExpiryAndMembershipRevocation|HTTPSAndCrossOriginProtection|LocalRecoveryRevokesSessionsAndDoesNotChangeAccess|PINSessionCannotBecomeAdministrativeAfterPermissionChange|NewPasswordLengthBoundaries)$$
+CI_GUARD_TESTS := ^Test(BackupContractKeepsSnapshotOpenUntilPlansFinish|SlowJSONBodyDoesNotFreezeOtherMutations|CancelledRequestsLeaveBackupQueues|JSONAdmissionPreservesBodyLimits|BackupExportDoesNotQueueDeclaredPluginQueries|BackupExportAllowsReadersButFreezesMutations|BackupRestoreStillExcludesReaders|SettingsAndModuleChangesAreAtomicAndProtectedFromCSRF)$$
 CI_APP_TESTS := ^Test(PersistentPluginPublicSDKExample|HTTPFoundation|StorageSettingsDefaultPermissionsCSRFAndValidation|EncryptedRestoreAuthenticatesAllBytesBeforeEitherImport|PersistentPluginExternalDocuments|PersistentPluginDocumentsAdoptsExistingSchema|PersistentPluginS3StorageSwitchBackupAndRecovery|PersistentPluginMoveOriginalsPreservesMetadataAndSharing)$$
 
 test-ci:
 	go test -race -timeout=$(GO_TEST_TIMEOUT) ./cmd/homeatlas ./plugins/documents \
+		./internal/architecture ./internal/core/fault ./internal/core/unitofwork \
 		./internal/core/access ./internal/core/backup ./internal/core/collections \
 		./internal/core/database ./internal/core/mailer ./internal/core/modules \
 		./internal/core/objectstore ./internal/core/plugins

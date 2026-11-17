@@ -3,7 +3,6 @@ package app
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"io"
 	"mime"
@@ -15,13 +14,12 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sync/semaphore"
-
 	"github.com/home-atlas/homeatlas/internal/core/access"
 	"github.com/home-atlas/homeatlas/internal/core/backup"
-	"github.com/home-atlas/homeatlas/internal/core/database"
 	"github.com/home-atlas/homeatlas/internal/core/identity"
 	"github.com/home-atlas/homeatlas/internal/core/modules"
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
+	"golang.org/x/sync/semaphore"
 )
 
 const backupPermission = "household.backup"
@@ -99,27 +97,13 @@ type backupManifest struct {
 }
 type householdBackups struct {
 	participants    []backup.Participant
-	db              *sql.DB
+	store           *backupRepository
 	accounts        *identity.Service
 	dataDir         string
 	resources       *semaphore.Weighted
 	operations      sync.Mutex
 	mutations       *semaphore.Weighted
 	readOnlyActions map[string]bool
-}
-
-func newBackups(ctx context.Context, db *sql.DB, accounts *identity.Service, dataDir string, participants ...backup.Participant) (*householdBackups, error) {
-	if err := database.Apply(ctx, db, "app.household-backups", []database.Migration{{Version: 1, SQL: `INSERT OR IGNORE INTO identity_permissions(user_id,household_id,capability) SELECT user_id,household_id,'household.backup' FROM identity_memberships WHERE role='owner';`}}); err != nil {
-		return nil, err
-	}
-	b := &householdBackups{db: db, accounts: accounts, dataDir: dataDir, participants: participants, resources: semaphore.NewWeighted(backupLockCapacity), mutations: semaphore.NewWeighted(1)}
-	if err := b.validateParticipants(); err != nil {
-		return nil, err
-	}
-	if err := b.prepareSchedules(ctx); err != nil {
-		return nil, err
-	}
-	return b, nil
 }
 
 // Exports freeze mutations but permit readers. Restores exclude all operations.
@@ -215,7 +199,7 @@ func (b *householdBackups) mount(mux *http.ServeMux) {
 func backupFail(w http.ResponseWriter, status int, code string) {
 	modules.JSON(w, status, map[string]string{"error": code})
 }
-func (b *householdBackups) authorize(ctx context.Context, tx *sql.Tx) (access.Principal, error) {
+func (b *householdBackups) authorize(ctx context.Context, tx unitofwork.Transaction) (access.Principal, error) {
 	p, ok := access.Current(ctx)
 	if !ok {
 		return p, errBackupDenied
@@ -236,7 +220,7 @@ func (b *householdBackups) allowed(w http.ResponseWriter, r *http.Request) bool 
 	}
 	_, err := b.authorize(r.Context(), nil)
 	if err != nil {
-		if errors.Is(err, errBackupDenied) || errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, errBackupDenied) || errors.Is(err, unitofwork.ErrNotFound) {
 			backupFail(w, 403, "permission_denied")
 		} else {
 			backupFail(w, 503, "backup_unavailable")
@@ -494,44 +478,24 @@ func (b *householdBackups) restoreReport(s householdSnapshot) map[string]any {
 	return report
 }
 
-func (b *householdBackups) apply(ctx context.Context, s householdSnapshot, dir string, keepOld bool, initialize func(*sql.Tx) (access.Principal, error)) error {
-	source, err := openSnapshot(s.path)
+func (b *householdBackups) apply(ctx context.Context, s householdSnapshot, dir string, keepOld bool, initialize func(unitofwork.Transaction) (access.Principal, error)) error {
+	plans, source, err := b.stageRestore(ctx, s, dir, keepOld)
 	if err != nil {
 		return err
 	}
 	defer source.Close()
-	plans := []backup.Plan{}
 	committed := false
 	defer func() {
 		for i := len(plans) - 1; i >= 0; i-- {
 			plans[i].Finish(committed, keepOld)
 		}
 	}()
-	// Validate and stage every module before any live SQL mutation.
-	for _, part := range s.parts {
-		participant, ok := b.snapshotParticipant(part)
-		if !ok || participant.Version() != part.Version {
-			return errBackupModuleRequired
-		}
-		present, err := participant.Present(ctx, b.db)
-		if err != nil {
-			return err
-		}
-		if !present {
-			return errBackupModuleRequired
-		}
-		plan, err := participant.Prepare(ctx, source, filepath.Join(dir, b.partPrefix(s.version, participant)), s.household.ID)
-		if err != nil {
-			return err
-		}
-		plans = append(plans, plan)
-	}
-	tx, err := b.db.BeginTx(ctx, nil)
+	tx, err := b.store.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	authorize := func(tx *sql.Tx) (access.Principal, error) { return b.authorize(ctx, tx) }
+	authorize := func(tx unitofwork.Transaction) (access.Principal, error) { return b.authorize(ctx, tx) }
 	if initialize != nil {
 		authorize = initialize
 	}
@@ -550,23 +514,12 @@ func (b *householdBackups) apply(ctx context.Context, s householdSnapshot, dir s
 		}
 	}
 	for _, plan := range plans {
-		if err := plan.Apply(ctx, tx, rc); err != nil {
+		if err := b.store.applyPlan(ctx, tx, plan, rc); err != nil {
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE identity_households SET name=?,timezone=? WHERE id=?", s.household.Name, s.household.Timezone, principal.HouseholdID); err != nil {
+	if err := b.store.restoreCore(ctx, tx, s, principal); err != nil {
 		return err
-	}
-	// Preserve preferences and data belonging to modules absent from this snapshot.
-	for _, part := range s.parts {
-		if _, err := tx.ExecContext(ctx, "DELETE FROM household_module_states WHERE household_id=? AND module_id=?", principal.HouseholdID, part.ID); err != nil {
-			return err
-		}
-		if enabled, ok := s.modules[part.ID]; ok {
-			if _, err := tx.ExecContext(ctx, "INSERT INTO household_module_states(household_id,module_id,enabled) VALUES(?,?,?)", principal.HouseholdID, part.ID, enabled); err != nil {
-				return err
-			}
-		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err

@@ -2,7 +2,6 @@ package modules
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -69,19 +68,10 @@ type entry struct {
 }
 
 type Registry struct {
-	db      *sql.DB
+	store   Repository
 	mu      sync.RWMutex
 	entries map[string]*entry
 	order   []string
-}
-
-func New(ctx context.Context, db *sql.DB) (*Registry, error) {
-	err := database.Apply(ctx, db, "core.modules", []database.Migration{{Version: 1, SQL: `CREATE TABLE module_states (id TEXT PRIMARY KEY, enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)))`}, {Version: 2, SQL: `
- CREATE TABLE household_module_states (
-   household_id TEXT NOT NULL, module_id TEXT NOT NULL REFERENCES module_states(id),
-   enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), PRIMARY KEY(household_id,module_id));
- `}})
-	return &Registry{db: db, entries: make(map[string]*entry)}, err
 }
 
 var identifier = regexp.MustCompile(`^[a-z][a-z0-9-]{0,47}$`)
@@ -125,14 +115,8 @@ func (r *Registry) Register(ctx context.Context, module Module) error {
 		}
 		seen[key] = true
 	}
-	if err := database.Apply(ctx, r.db, m.ID, module.Migrations()); err != nil {
-		return err
-	}
-	if _, err := r.db.ExecContext(ctx, "INSERT INTO module_states (id, enabled) VALUES (?, 1) ON CONFLICT(id) DO NOTHING", m.ID); err != nil {
-		return err
-	}
-	var enabled bool
-	if err := r.db.QueryRowContext(ctx, "SELECT enabled FROM module_states WHERE id = ?", m.ID).Scan(&enabled); err != nil {
+	enabled, err := r.store.register(ctx, m.ID, module.Migrations())
+	if err != nil {
 		return err
 	}
 	for _, dependency := range m.Dependencies {
@@ -163,7 +147,7 @@ func (r *Registry) SetEnabled(ctx context.Context, id string, enabled bool) erro
 			}
 		}
 	}
-	if _, err := r.db.ExecContext(ctx, "UPDATE module_states SET enabled = ? WHERE id = ?", enabled, id); err != nil {
+	if err := r.store.setEnabled(ctx, id, enabled); err != nil {
 		return err
 	}
 	e.enabled = enabled
@@ -198,7 +182,7 @@ func (r *Registry) Mount(mux *http.ServeMux) {
 					Authorize(w, req, route.Permission)
 					return
 				}
-				states, err := r.effective(req.Context(), r.db, p.HouseholdID)
+				states, err := r.effective(req.Context(), nil, p.HouseholdID)
 				if err != nil {
 					JSON(w, 503, map[string]string{"error": "modules_unavailable"})
 					return
@@ -224,7 +208,7 @@ func (r *Registry) Search(ctx context.Context, query string) ([]SearchResult, er
 	if !ok {
 		return result, nil
 	}
-	states, err := r.effective(ctx, r.db, p.HouseholdID)
+	states, err := r.effective(ctx, nil, p.HouseholdID)
 	if err != nil {
 		return nil, err
 	}

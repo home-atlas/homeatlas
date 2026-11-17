@@ -82,7 +82,7 @@ func TestAssistedEnrollmentAndDeviceBoundPIN(t *testing.T) {
 	}
 	var pinHash string
 	var stored []byte
-	if err := s.db.QueryRow("SELECT pin_hash,token_hash FROM identity_pin_devices WHERE user_id=?", user).Scan(&pinHash, &stored); err != nil {
+	if err := identityDB(s).QueryRow("SELECT pin_hash,token_hash FROM identity_pin_devices WHERE user_id=?", user).Scan(&pinHash, &stored); err != nil {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256([]byte(device.Value))
@@ -118,7 +118,7 @@ func TestAssistedEnrollmentAndDeviceBoundPIN(t *testing.T) {
 	if w := send(h, testOrigin, "GET", "/api/household/members", nil, cookie); w.Code != 200 || strings.Contains(w.Body.String(), "alice@example.test") {
 		t.Fatal("private member email disclosed")
 	}
-	code, _, err := IssueRecovery(context.Background(), s.db, "maria")
+	code, _, err := IssueRecovery(context.Background(), identityDB(s), "maria")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestPINLockPersistsAndEnrollmentRevokesOldDevice(t *testing.T) {
 	for range 5 {
 		send(h, testOrigin, "POST", "/api/auth/pin/login", map[string]string{"pin": "111111"}, device)
 	}
-	restarted, err := New(context.Background(), s.db, Config{PublicURL: testOrigin, OwnerCapabilities: s.ownerCapabilities, DelegableCapabilities: s.capabilities})
+	restarted, err := New(context.Background(), identityDB(s), Config{PublicURL: testOrigin, OwnerCapabilities: s.ownerCapabilities, DelegableCapabilities: s.capabilities})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestAssistedEnrollmentRequiresFreshManagerAndCurrentGrant(t *testing.T) {
 		t.Fatal("assisted admin allowed", w.Code)
 	}
 	token, _ := newAssisted(t, h, owner, "maria")
-	if _, err := s.db.Exec("DELETE FROM identity_permissions WHERE capability=?", Manage); err != nil {
+	if _, err := identityDB(s).Exec("DELETE FROM identity_permissions WHERE capability=?", Manage); err != nil {
 		t.Fatal(err)
 	}
 	if w := send(h, testOrigin, "POST", "/api/assisted/complete", map[string]string{"token": token, "pin": "642817", "deviceName": "Tablet"}, nil); w.Code != 410 {
@@ -190,7 +190,7 @@ func TestPINRegistrationAndRevocationAreScoped(t *testing.T) {
 	s, h, owner := assistedFixture(t)
 	token, user := newAssisted(t, h, owner, "maria")
 	activatePIN(t, h, token, "642817")
-	code, _, err := IssueRecovery(context.Background(), s.db, "maria")
+	code, _, err := IssueRecovery(context.Background(), identityDB(s), "maria")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestPINRegistrationAndRevocationAreScoped(t *testing.T) {
 		}
 	}
 	var id string
-	if err = s.db.QueryRow("SELECT id FROM identity_pin_devices WHERE user_id=?", user).Scan(&id); err != nil {
+	if err = identityDB(s).QueryRow("SELECT id FROM identity_pin_devices WHERE user_id=?", user).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	if w = send(h, testOrigin, "DELETE", "/api/auth/pin/devices/"+id, nil, owner); w.Code != 404 {
@@ -262,7 +262,7 @@ func TestPINSessionCannotBecomeAdministrativeAfterPermissionChange(t *testing.T)
 	if w = send(h, testOrigin, "PATCH", "/api/household/members/"+user, map[string]any{"role": "admin", "permissions": []string{"documents.read"}}, owner); w.Code != 403 {
 		t.Fatal("PIN-only account was promoted", w.Code)
 	}
-	if _, err := s.db.Exec("INSERT INTO identity_permissions(user_id,household_id,capability) SELECT user_id,household_id,? FROM identity_memberships WHERE user_id=?", Manage, user); err != nil {
+	if _, err := identityDB(s).Exec("INSERT INTO identity_permissions(user_id,household_id,capability) SELECT user_id,household_id,? FROM identity_memberships WHERE user_id=?", Manage, user); err != nil {
 		t.Fatal(err)
 	}
 	if w = send(h, testOrigin, "GET", "/api/auth/session", nil, cookie); w.Code != 200 || !strings.Contains(w.Body.String(), `"session":null`) {

@@ -4,18 +4,19 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/home-atlas/homeatlas/internal/core/fault"
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
 )
 
 const recoveryLifetime = 15 * time.Minute
@@ -27,9 +28,9 @@ func randomCode() string {
 	return base64.RawURLEncoding.EncodeToString(raw[:])
 }
 
-func (s *Service) prepareSetupCode(ctx context.Context, path string) error {
+func (s *Application) prepareSetupCode(ctx context.Context, path string) error {
 	var ready bool
-	if err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM identity_installation)").Scan(&ready); err != nil {
+	if err := s.store.readSetupState(ctx, nil, &ready); err != nil {
 		return err
 	}
 	s.setupCodePath = path
@@ -91,7 +92,7 @@ func (s *Service) prepareSetupCode(ctx context.Context, path string) error {
 	return nil
 }
 
-func (s *Service) removeSetupCode() {
+func (s *Application) removeSetupCode() {
 	if s.setupCodePath == "" {
 		return
 	}
@@ -102,21 +103,19 @@ func (s *Service) removeSetupCode() {
 }
 
 // IssueRecovery is for the local CLI only; email recovery uses a separate token table.
-func IssueRecovery(ctx context.Context, db *sql.DB, email string) (string, time.Time, error) {
+func (s *Application) issueRecovery(ctx context.Context, email string) (string, time.Time, error) {
 	email, ok := normalizeLogin(email)
 	if !ok {
 		return "", time.Time{}, fmt.Errorf("invalid account identifier")
 	}
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := s.store.Begin(ctx)
 	if err != nil {
 		return "", time.Time{}, err
 	}
 	defer tx.Rollback()
 	var userID string
-	err = tx.QueryRowContext(ctx, `SELECT u.id FROM identity_users u WHERE (u.email=? OR u.username=?)
- AND EXISTS(SELECT 1 FROM identity_installation)
- AND EXISTS(SELECT 1 FROM identity_memberships m WHERE m.user_id=u.id)`, email, email).Scan(&userID)
-	if errors.Is(err, sql.ErrNoRows) {
+	err = s.store.readLocalRecoveryAccount(ctx, tx, email, email, &userID)
+	if errors.Is(err, unitofwork.ErrNotFound) {
 		return "", time.Time{}, fmt.Errorf("no active local account matches that identifier")
 	}
 	if err != nil {
@@ -125,8 +124,7 @@ func IssueRecovery(ctx context.Context, db *sql.DB, email string) (string, time.
 	code := randomCode()
 	digest, _ := tokenDigest(code)
 	expires := time.Now().Add(recoveryLifetime).UTC().Truncate(time.Second)
-	_, err = tx.ExecContext(ctx, `INSERT INTO identity_recovery(user_id,token_hash,expires_at) VALUES(?,?,?)
- ON CONFLICT(user_id) DO UPDATE SET token_hash=excluded.token_hash,expires_at=excluded.expires_at`, userID, digest, expires.Unix())
+	_, err = s.store.saveLocalRecovery(ctx, tx, userID, digest, expires.Unix())
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -136,97 +134,66 @@ func IssueRecovery(ctx context.Context, db *sql.DB, email string) (string, time.
 	return code, expires, nil
 }
 
-func (s *Service) recoverAccess(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Code     string `json:"code"`
-		Password string `json:"password"`
-	}
-	if !decode(w, r, &input) {
-		return
-	}
-	if !s.acquire(w) {
-		return
+func (s *Application) RecoverAccess(ctx context.Context, client Client, input RecoverAccessInput) (Result, error) {
+	result := Result{}
+
+	if err := s.acquire(); err != nil {
+		return result, err
 	}
 	defer func() { <-s.work }()
 	digest, valid := tokenDigest(strings.TrimSpace(input.Code))
-	if !s.limit(w, r, "recovery:"+hex.EncodeToString(digest)) {
-		return
+	if err := s.limit(ctx, client, "recovery:"+hex.EncodeToString(digest)); err != nil {
+		return result, err
 	}
 	if !valid {
-		fail(w, 410, "recovery_unavailable")
-		return
+		return result, fault.New(fault.Expired, "recovery_unavailable")
 	}
 	if !validNewPassword(input.Password) {
-		fail(w, 400, "invalid_password")
-		return
+		return result, fault.New(fault.Invalid, "invalid_password")
 	}
 	// Avoid password derivation for nonexistent tokens; validity is rechecked atomically below.
 	var exists bool
-	if err := s.db.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM identity_recovery WHERE token_hash=? AND expires_at>?) OR EXISTS(`+validMailRecovery+`)`, digest, time.Now().Unix(), digest, time.Now().Unix()).Scan(&exists); err != nil {
-		fail(w, 503, "recovery_unavailable")
-		return
+	if err := s.store.isRecoveryAvailable(ctx, nil, digest, time.Now().Unix(), digest, time.Now().Unix(), &exists); err != nil {
+		return result, fault.New(fault.Unavailable, "recovery_unavailable")
 	}
 	if !exists {
-		fail(w, 410, "recovery_unavailable")
-		return
+		return result, fault.New(fault.Expired, "recovery_unavailable")
 	}
 	hash, err := hashPassword(input.Password)
 	if err != nil {
-		fail(w, 503, "recovery_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "recovery_unavailable")
 	}
-	tx, err := s.db.BeginTx(r.Context(), nil)
+	tx, err := s.store.Begin(ctx)
 	if err != nil {
-		fail(w, 503, "recovery_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "recovery_unavailable")
 	}
 	defer tx.Rollback()
 	var userID, email string
-	err = tx.QueryRowContext(r.Context(), `DELETE FROM identity_recovery WHERE token_hash=? AND expires_at>?
- AND EXISTS(SELECT 1 FROM identity_memberships m WHERE m.user_id=identity_recovery.user_id) RETURNING user_id`, digest, time.Now().Unix()).Scan(&userID)
-	if errors.Is(err, sql.ErrNoRows) {
-		err = tx.QueryRowContext(r.Context(), `DELETE FROM identity_mail_recovery WHERE user_id IN (`+validMailRecovery+`) AND token_hash=? RETURNING user_id`, digest, time.Now().Unix(), digest).Scan(&userID)
+	err = s.store.consumeLocalRecovery(ctx, tx, digest, time.Now().Unix(), &userID)
+	if errors.Is(err, unitofwork.ErrNotFound) {
+		err = s.store.consumeMailRecovery(ctx, tx, digest, time.Now().Unix(), digest, &userID)
 	}
-	if errors.Is(err, sql.ErrNoRows) {
-		fail(w, 410, "recovery_unavailable")
-		return
+	if errors.Is(err, unitofwork.ErrNotFound) {
+		return result, fault.New(fault.Expired, "recovery_unavailable")
 	}
 	if err != nil {
-		fail(w, 503, "recovery_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "recovery_unavailable")
 	}
-	if err := tx.QueryRowContext(r.Context(), `UPDATE identity_users SET password_hash=? WHERE id=? RETURNING COALESCE(email,username)`, hash, userID).Scan(&email); err != nil {
-		fail(w, 503, "recovery_unavailable")
-		return
+	if err := s.store.replaceRecoveredPassword(ctx, tx, hash, userID, &email); err != nil {
+		return result, fault.New(fault.Unavailable, "recovery_unavailable")
 	}
 	// Revoke all sessions across households and invitations issued before recovery.
-	for _, statement := range []struct {
-		query string
-		args  []any
-	}{
-		{`DELETE FROM identity_recovery WHERE user_id=?`, []any{userID}},
-		{`DELETE FROM identity_mail_recovery WHERE user_id=?`, []any{userID}},
-		{`DELETE FROM identity_email_verification WHERE user_id=?`, []any{userID}},
-		{`DELETE FROM identity_sessions WHERE user_id=?`, []any{userID}},
-		{`DELETE FROM identity_pin_devices WHERE user_id=?`, []any{userID}},
-		{`DELETE FROM identity_assisted_enrollments WHERE user_id=?`, []any{userID}},
-		{`UPDATE identity_invitations SET revoked_at=? WHERE issuer_id=? AND accepted_at=0 AND revoked_at=0`, []any{time.Now().Unix(), userID}},
-	} {
-		if _, err := tx.ExecContext(r.Context(), statement.query, statement.args...); err != nil {
-			fail(w, 503, "recovery_unavailable")
-			return
-		}
+	if err := s.store.revokeRecoveredCredentials(ctx, tx, userID, time.Now().Unix()); err != nil {
+		return result, fault.New(fault.Unavailable, "recovery_unavailable")
 	}
 	accountKey := sha256.Sum256([]byte("account:" + email))
-	if _, err := tx.ExecContext(r.Context(), `DELETE FROM identity_login_attempts WHERE key=?`, accountKey[:]); err != nil {
-		fail(w, 503, "recovery_unavailable")
-		return
+	if _, err := s.store.clearRecoveredAccountAttempts(ctx, tx, accountKey[:]); err != nil {
+		return result, fault.New(fault.Unavailable, "recovery_unavailable")
 	}
 	if err := tx.Commit(); err != nil {
-		fail(w, 503, "recovery_unavailable")
-		return
+		return result, fault.New(fault.Unavailable, "recovery_unavailable")
 	}
-	s.clearCookie(w)
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusNoContent)
+	result.EndSession = true
+
+	return result, nil
 }

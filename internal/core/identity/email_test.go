@@ -62,7 +62,7 @@ func mailCode(t *testing.T, message sentMail, path string) string {
 func mailService(t *testing.T) (*Service, http.Handler, *testMailer, *http.Cookie) {
 	t.Helper()
 	dir := t.TempDir()
-	db, err := database.Open(filepath.Join(dir, "homeatlas.db"))
+	db, err := database.Open(filepath.Join(dir, "identityDB(homeatlas)"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestVerificationRequiresMailboxProofAndIsSingleUse(t *testing.T) {
 	}
 	code := mailCode(t, m.next(t), "/verify-email")
 	var hash []byte
-	if err := s.db.QueryRow(`SELECT token_hash FROM identity_email_verification`).Scan(&hash); err != nil {
+	if err := identityDB(s).QueryRow(`SELECT token_hash FROM identity_email_verification`).Scan(&hash); err != nil {
 		t.Fatal(err)
 	}
 	want, _ := tokenDigest(code)
@@ -150,14 +150,14 @@ func TestVerificationReissueExpiryAndBindingToAddress(t *testing.T) {
 	if w := send(h, testOrigin, "POST", "/api/auth/email/verify", map[string]string{"code": old}, nil); w.Code != 410 {
 		t.Fatal("old verification survived reissue")
 	}
-	if _, err := s.db.Exec(`UPDATE identity_email_verification SET expires_at=0`); err != nil {
+	if _, err := identityDB(s).Exec(`UPDATE identity_email_verification SET expires_at=0`); err != nil {
 		t.Fatal(err)
 	}
 	if w := send(h, testOrigin, "POST", "/api/auth/email/verify", map[string]string{"code": latest}, nil); w.Code != 410 {
 		t.Fatal("expired verification accepted")
 	}
 	latest = request()
-	if _, err := s.db.Exec(`UPDATE identity_users SET email='changed@example.test'`); err != nil {
+	if _, err := identityDB(s).Exec(`UPDATE identity_users SET email='changed@example.test'`); err != nil {
 		t.Fatal(err)
 	}
 	if w := send(h, testOrigin, "POST", "/api/auth/email/verify", map[string]string{"code": latest}, nil); w.Code != 410 {
@@ -195,7 +195,7 @@ func TestEmailRecoveryOnlyForVerifiedAccountsWithoutEnumerating(t *testing.T) {
 	}
 	code := mailCode(t, message, "/forgot-password")
 	var stored []byte
-	s.db.QueryRow(`SELECT token_hash FROM identity_mail_recovery`).Scan(&stored)
+	identityDB(s).QueryRow(`SELECT token_hash FROM identity_mail_recovery`).Scan(&stored)
 	want, _ := tokenDigest(code)
 	if !bytes.Equal(stored, want) {
 		t.Fatal("mail recovery token not hashed")
@@ -217,7 +217,7 @@ func TestEmailRecoveryOnlyForVerifiedAccountsWithoutEnumerating(t *testing.T) {
 func TestMailRequestsDoNotInvalidateLocalRecovery(t *testing.T) {
 	s, h, m, cookie := mailService(t)
 	verifyMailbox(t, h, m, cookie)
-	local := issueRecovery(t, s.db)
+	local := issueRecovery(t, identityDB(s))
 	request := func() string {
 		t.Helper()
 		if w := send(h, testOrigin, "POST", "/api/auth/recovery/request", map[string]string{"email": "alice@example.test"}, nil); w.Code != 202 {
@@ -297,14 +297,14 @@ func TestEmailRecoveryRejectsExpiryAndLostMailboxProof(t *testing.T) {
 		return mailCode(t, m.next(t), "/forgot-password")
 	}
 	code := issue()
-	if _, err := s.db.Exec(`UPDATE identity_mail_recovery SET expires_at=0`); err != nil {
+	if _, err := identityDB(s).Exec(`UPDATE identity_mail_recovery SET expires_at=0`); err != nil {
 		t.Fatal(err)
 	}
 	if w := send(h, testOrigin, "POST", "/api/auth/recover", map[string]string{"code": code, "password": testPassword}, nil); w.Code != 410 {
 		t.Fatal("expired email recovery accepted")
 	}
 	code = issue()
-	if _, err := s.db.Exec(`DELETE FROM identity_verified_emails`); err != nil {
+	if _, err := identityDB(s).Exec(`DELETE FROM identity_verified_emails`); err != nil {
 		t.Fatal(err)
 	}
 	if w := send(h, testOrigin, "POST", "/api/auth/recover", map[string]string{"code": code, "password": testPassword}, nil); w.Code != 410 {

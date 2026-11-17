@@ -24,7 +24,7 @@ func TestPersistentBackupFiltersMembershipsAndRestoresOnlyIncludedNamespace(t *t
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.db.Exec("DELETE FROM identity_memberships WHERE user_id='bob'"); err != nil {
+	if _, err := s.repository.db.Exec("DELETE FROM identity_memberships WHERE user_id='bob'"); err != nil {
 		t.Fatal(err)
 	}
 	p := testPackage(t, true)
@@ -47,7 +47,7 @@ func TestPersistentBackupFiltersMembershipsAndRestoresOnlyIncludedNamespace(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := provider.Export(ctx, s.db, tx, "home-a", false); err != nil {
+	if err := provider.Export(ctx, s.repository.db, tx, "home-a", false); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -66,7 +66,7 @@ func TestPersistentBackupFiltersMembershipsAndRestoresOnlyIncludedNamespace(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	live, err := s.db.Begin()
+	live, err := s.repository.db.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}

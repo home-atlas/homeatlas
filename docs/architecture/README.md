@@ -31,7 +31,13 @@ flowchart LR
 
 In-process callers supply authenticated principal context and must run through the application backup coordination gate. Identity, permissions, current membership and module activation are rechecked before upload publication. This method is an internal host API, not a way for WASI guests or external callers to supply identity. HTTP supports metadata before or after the file without a second full copy.
 
-Separation is incremental: other identity/collection handlers still contain SQL, `access.Directory` remains transaction-aware and backup coordination lives in `internal/app`. The project does not claim a fully persistence-independent domain. Extend case/adapter boundaries where another transport or workflow needs reuse; avoid an interface for every function.
+Identity now has an `Application` with typed input/result records and classified failures. `identity/http.go` owns decoding, cookies, CSRF, routes and HTTP status mapping; repositories in `*_sql.go` own queries, scans and migrations. Login, recovery, invitations, membership changes, assisted enrollment, PIN devices, email verification and household settings reuse the application operations without HTTP. The local recovery CLI uses the same repository. `Application.Authenticate(context, token)` creates the session/principal context for either transport and clears any previous identity on failure.
+
+Collection list/search/detail/update/sharing operations use typed repository methods. Metadata validation stays in the application, including direct update calls. Membership, read/write/share permissions, ownership and module activation are rechecked inside the committing transaction. Registry state, Local/S3 settings and moves, scheduled backup history and private/shared plugin storage follow the same policy/persistence boundary. SQL belongs in explicit `*_sql.go` adapters; the composition root supplies SQLite connections.
+
+`access.Directory` and authorization callbacks accept `unitofwork.Transaction` (commit/rollback only), without `database/sql`. The same native transaction reaches all SQL adapters, so a failed identity, grant, original-location or module write cannot publish a partial change. Rate counters retain their existing separately committed transaction. `unitofwork.ErrNotFound` is independent of the driver; adapters retain SQL error compatibility for existing backup integrations.
+
+Backup snapshot codecs and the trusted `backup.Provider` contract intentionally remain SQLite-specific. Snapshot serialization, migrations and composition are infrastructure boundaries, not portable application ports. Backup coordination remains in `internal/app`; trusted direct callers must use its gate. No claim of interchangeable database engines or multi-process coordination is made. `internal/architecture` checks that application/HTTP code cannot reintroduce direct SQL calls and that identity application code cannot import HTTP.
 
 ## Security boundaries
 

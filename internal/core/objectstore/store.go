@@ -6,11 +6,9 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -20,8 +18,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/home-atlas/homeatlas/internal/core/backup"
-	"github.com/home-atlas/homeatlas/internal/core/database"
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
 )
 
 var Invalid = errors.New("invalid storage configuration")
@@ -48,26 +45,13 @@ type Settings struct {
 	CredentialsConfigured bool     `json:"credentialsConfigured"`
 }
 type Store struct {
-	db  *sql.DB
-	dir string
-	mu  sync.Mutex
+	repository *sqliteRepository
+	dir        string
+	mu         sync.Mutex
 	// HTTPClient is injectable for TLS integration tests; defaults never follow redirects.
 	HTTPClient aws.HTTPClient
 }
 
-func New(ctx context.Context, db *sql.DB, dir string) (*Store, error) {
-	if err := database.Apply(ctx, db, "core.file-storage", []database.Migration{{Version: 1, SQL: `
- CREATE TABLE file_storage_profiles(id TEXT PRIMARY KEY, household_id TEXT NOT NULL, sealed BLOB NOT NULL);
- CREATE TABLE file_storage_settings(household_id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, revision TEXT NOT NULL);
- CREATE TABLE file_storage_locations(module_id TEXT NOT NULL, file_key TEXT NOT NULL, profile_id TEXT NOT NULL REFERENCES file_storage_profiles(id), object_key TEXT NOT NULL, size_bytes INTEGER NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY(module_id,file_key));
- `}, {Version: 2, SQL: `
- CREATE TABLE file_storage_cleanup(id TEXT PRIMARY KEY,household_id TEXT NOT NULL,module_id TEXT NOT NULL,file_key TEXT NOT NULL,profile_id TEXT NOT NULL,object_key TEXT NOT NULL);
- CREATE INDEX file_storage_cleanup_household ON file_storage_cleanup(household_id);
- `}}); err != nil {
-		return nil, err
-	}
-	return &Store{db: db, dir: dir, HTTPClient: &http.Client{Timeout: 60 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
-}
 func validate(c S3Config) error {
 	if !regionName.MatchString(c.Region) || !bucketName.MatchString(c.Bucket) || strings.Contains(c.Bucket, "..") || !safePrefix.MatchString(c.Prefix) || strings.Contains(c.Prefix, "//") || len(c.AccessKey) < 1 || len(c.AccessKey) > 256 || len(c.SecretKey) < 1 || len(c.SecretKey) > 512 {
 		return Invalid
@@ -155,15 +139,14 @@ func (s *Store) crypt(house, id string, raw []byte, seal bool) ([]byte, error) {
 	return raw, nil
 }
 func (s *Store) profile(ctx context.Context, id string) (string, S3Config, error) {
-	return s.profileFrom(ctx, s.db, id)
-}
-func (s *Store) profileFrom(ctx context.Context, q backup.Queryer, id string) (string, S3Config, error) {
-	var house string
-	var sealed []byte
-	var config S3Config
-	if err := q.QueryRowContext(ctx, "SELECT household_id,sealed FROM file_storage_profiles WHERE id=?", id).Scan(&house, &sealed); err != nil {
-		return house, config, err
+	house, sealed, err := s.repository.profile(ctx, id)
+	if err != nil {
+		return house, S3Config{}, err
 	}
+	return s.decodeProfile(house, id, sealed)
+}
+func (s *Store) decodeProfile(house, id string, sealed []byte) (string, S3Config, error) {
+	var config S3Config
 	raw, err := s.crypt(house, id, sealed, false)
 	if err != nil {
 		return house, config, err
@@ -178,9 +161,9 @@ func (s *Store) profileFrom(ctx context.Context, q backup.Queryer, id string) (s
 }
 func (s *Store) current(ctx context.Context, house string) (Settings, string, error) {
 	result := Settings{Provider: "local", S3: S3Config{Region: "us-east-1", PathStyle: true}}
-	var id string
-	err := s.db.QueryRowContext(ctx, "SELECT profile_id,revision FROM file_storage_settings WHERE household_id=?", house).Scan(&id, &result.Revision)
-	if errors.Is(err, sql.ErrNoRows) {
+	id, revision, err := s.repository.settings(ctx, nil, house)
+	result.Revision = revision
+	if errors.Is(err, unitofwork.ErrNotFound) {
 		return result, "", nil
 	}
 	if err != nil {
@@ -208,7 +191,7 @@ func (s *Store) Settings(ctx context.Context, house string) (Settings, error) {
 }
 
 // Save tests new S3 credentials before publishing; authorize runs again in the commit transaction.
-func (s *Store) Save(ctx context.Context, house string, input Settings, authorize func(*sql.Tx) error) error {
+func (s *Store) Save(ctx context.Context, house string, input Settings, authorize func(unitofwork.Transaction) error) error {
 	if input.Provider != "local" && input.Provider != "s3" {
 		return Invalid
 	}
@@ -244,23 +227,7 @@ func (s *Store) Save(ctx context.Context, house string, input Settings, authoriz
 			return Unavailable
 		}
 		// Refresh credentials for prior profiles of the same destination, preserving object locations.
-		rows, readErr := s.db.QueryContext(ctx, "SELECT id,sealed FROM file_storage_profiles WHERE household_id=?", house)
-		if readErr != nil {
-			return readErr
-		}
-		oldProfiles := map[string][]byte{}
-		for rows.Next() {
-			var profile string
-			var raw []byte
-			if readErr = rows.Scan(&profile, &raw); readErr != nil {
-				break
-			}
-			oldProfiles[profile] = raw
-		}
-		if readErr == nil {
-			readErr = rows.Err()
-		}
-		rows.Close()
+		oldProfiles, readErr := s.repository.profiles(ctx, house)
 		if readErr != nil {
 			return readErr
 		}
@@ -289,7 +256,7 @@ func (s *Store) Save(ctx context.Context, house string, input Settings, authoriz
 			return err
 		}
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.repository.Begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -297,25 +264,14 @@ func (s *Store) Save(ctx context.Context, house string, input Settings, authoriz
 	if err = authorize(tx); err != nil {
 		return err
 	}
-	var fresh string
-	err = tx.QueryRowContext(ctx, "SELECT revision FROM file_storage_settings WHERE household_id=?", house).Scan(&fresh)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	_, fresh, err := s.repository.settings(ctx, tx, house)
+	if err != nil && !errors.Is(err, unitofwork.ErrNotFound) {
 		return err
 	}
 	if fresh != input.Revision {
 		return Conflict
 	}
-	for profile, updated := range refresh {
-		if _, err = tx.ExecContext(ctx, "UPDATE file_storage_profiles SET sealed=? WHERE id=? AND household_id=?", updated, profile, house); err != nil {
-			return err
-		}
-	}
-	if id != "" {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO file_storage_profiles VALUES(?,?,?)", id, house, sealed); err != nil {
-			return err
-		}
-	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO file_storage_settings VALUES(?,?,?) ON CONFLICT(household_id) DO UPDATE SET profile_id=excluded.profile_id,revision=excluded.revision`, house, id, rand.Text()); err != nil {
+	if err = s.repository.saveSettings(ctx, tx, house, id, sealed, refresh, rand.Text()); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -330,9 +286,8 @@ type Pending struct {
 	config                       S3Config
 }
 
-func (p *Pending) Publish(ctx context.Context, tx *sql.Tx) error {
-	_, err := tx.ExecContext(ctx, "INSERT INTO file_storage_locations VALUES(?,?,?,?,?,?)", p.module, p.key, p.profile, p.object, p.size, p.digest)
-	return err
+func (p *Pending) Publish(ctx context.Context, tx unitofwork.Transaction) error {
+	return p.store.repository.publish(ctx, tx, p)
 }
 func (p *Pending) Abort() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -364,24 +319,21 @@ func (s *Store) Upload(ctx context.Context, house, module, key string, file *os.
 // Open downloads remote originals into a bounded private temporary file for ranges and backups.
 // An absent locator means the original remains in its existing local collection directory.
 func (s *Store) Open(ctx context.Context, module, key string) (*os.File, func(), error) {
-	return s.OpenFrom(ctx, s.db, module, key)
-}
-func (s *Store) OpenFrom(ctx context.Context, q backup.Queryer, module, key string) (*os.File, func(), error) {
-	var profile, object, digest string
-	var size int64
-	err := q.QueryRowContext(ctx, "SELECT profile_id,object_key,size_bytes,sha256 FROM file_storage_locations WHERE module_id=? AND file_key=?", module, key).Scan(&profile, &object, &size, &digest)
+	location, err := s.repository.location(ctx, module, key)
 	if err != nil {
 		return nil, func() {}, err
 	}
-	_, c, err := s.profileFrom(ctx, q, profile)
+	_, c, err := s.profile(ctx, location.profile)
 	if err != nil {
 		return nil, func() {}, Unavailable
 	}
-	if size < 1 || size > 20<<20 {
+	return s.openLocation(ctx, location, c)
+}
+func (s *Store) openLocation(ctx context.Context, location storedLocation, c S3Config) (*os.File, func(), error) {
+	if location.size < 1 || location.size > 20<<20 {
 		return nil, func() {}, Unavailable
 	}
-	file, cleanup, err := s.fetch(ctx, c, object, size, digest)
-	return file, cleanup, err
+	return s.fetch(ctx, c, location.object, location.size, location.digest)
 }
 func (s *Store) temp() (*os.File, error) {
 	dir := filepath.Join(s.dir, "file-staging")

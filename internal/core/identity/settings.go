@@ -2,14 +2,14 @@ package identity
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"net/http"
 	"strings"
 	"time"
 
 	"github.com/home-atlas/homeatlas/internal/core/access"
+	"github.com/home-atlas/homeatlas/internal/core/fault"
 	"github.com/home-atlas/homeatlas/internal/core/modules"
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
 )
 
 var errAuthenticationRequired = errors.New("authentication required")
@@ -23,13 +23,13 @@ func validTimezone(value string) bool {
 	return err == nil
 }
 
-func (s *Service) managementActor(ctx context.Context, tx *sql.Tx) (access.Member, error) {
+func (s *Application) managementActor(ctx context.Context, tx unitofwork.Transaction) (access.Member, error) {
 	p, ok := access.Current(ctx)
 	if !ok {
 		return access.Member{}, errAuthenticationRequired
 	}
 	m, err := s.Member(ctx, tx, p.HouseholdID, p.UserID)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, unitofwork.ErrNotFound) {
 		return m, errAuthenticationRequired
 	}
 	if err != nil {
@@ -44,106 +44,90 @@ func (s *Service) managementActor(ctx context.Context, tx *sql.Tx) (access.Membe
 	return m, nil
 }
 
-func (s *Service) managementError(w http.ResponseWriter, err error) {
+func managementFailure(err error) error {
 	switch {
 	case errors.Is(err, errAuthenticationRequired), errors.Is(err, modules.ErrHouseholdRequired):
-		fail(w, 401, "authentication_required")
+		return fault.New(fault.Unauthenticated, "authentication_required")
 	case errors.Is(err, errManagementDenied):
-		fail(w, 403, "permission_denied")
+		return fault.New(fault.Denied, "permission_denied")
 	case errors.Is(err, modules.ErrUnknownModule):
-		fail(w, 404, "module_not_found")
+		return fault.New(fault.Missing, "module_not_found")
 	case errors.Is(err, modules.ErrUnavailable):
-		fail(w, 409, "module_unavailable")
+		return fault.New(fault.Conflict, "module_unavailable")
 	case errors.Is(err, modules.ErrDependency):
-		fail(w, 409, "module_dependency_conflict")
+		return fault.New(fault.Conflict, "module_dependency_conflict")
 	default:
-		fail(w, 503, "management_unavailable")
+		return fault.New(fault.Unavailable, "management_unavailable")
 	}
 }
 
-func (s *Service) householdSettings(w http.ResponseWriter, r *http.Request) {
-	p, ok := access.Current(r.Context())
+func (s *Application) HouseholdSettings(ctx context.Context, client Client) (Result, error) {
+	result := Result{}
+
+	p, ok := access.Current(ctx)
 	if !ok {
-		fail(w, 401, "authentication_required")
-		return
+		return result, fault.New(fault.Unauthenticated, "authentication_required")
 	}
-	tx, err := s.db.BeginTx(r.Context(), nil)
+	tx, err := s.store.Begin(ctx)
 	if err != nil {
-		s.managementError(w, err)
-		return
+		return result, managementFailure(err)
 	}
 	defer tx.Rollback()
-	m, err := s.Member(r.Context(), tx, p.HouseholdID, p.UserID)
-	if errors.Is(err, sql.ErrNoRows) || err == nil && m.MembershipID != p.MembershipID {
-		s.managementError(w, errAuthenticationRequired)
-		return
+	m, err := s.Member(ctx, tx, p.HouseholdID, p.UserID)
+	if errors.Is(err, unitofwork.ErrNotFound) || err == nil && m.MembershipID != p.MembershipID {
+		return result, managementFailure(errAuthenticationRequired)
 	}
 	if err != nil {
-		s.managementError(w, err)
-		return
+		return result, managementFailure(err)
 	}
 	var h Household
-	if err := tx.QueryRowContext(r.Context(), `SELECT id,name,timezone FROM identity_households WHERE id=?`, p.HouseholdID).Scan(&h.ID, &h.Name, &h.Timezone); err != nil {
-		s.managementError(w, err)
-		return
+	if err := s.store.readHouseholdSettings(ctx, tx, p.HouseholdID, &h.ID, &h.Name, &h.Timezone); err != nil {
+		return result, managementFailure(err)
 	}
-	modules.JSON(w, 200, map[string]any{"household": h, "canManage": manager(m)})
+	result.Data = map[string]any{"household": h, "canManage": manager(m)}
+
+	return result, nil
 }
 
-func (s *Service) updateHouseholdSettings(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Name     string `json:"name"`
-		Timezone string `json:"timezone"`
-	}
-	if !decode(w, r, &input) {
-		return
-	}
+func (s *Application) UpdateHouseholdSettings(ctx context.Context, client Client, input UpdateHouseholdSettingsInput) (Result, error) {
+	result := Result{}
+
 	input.Name = strings.TrimSpace(input.Name)
 	if !validText(input.Name, 100) || !validTimezone(input.Timezone) {
-		fail(w, 400, "invalid_household_settings")
-		return
+		return result, fault.New(fault.Invalid, "invalid_household_settings")
 	}
-	tx, err := s.db.BeginTx(r.Context(), nil)
+	tx, err := s.store.Begin(ctx)
 	if err != nil {
-		s.managementError(w, err)
-		return
+		return result, managementFailure(err)
 	}
 	defer tx.Rollback()
-	if _, ok := s.actor(w, r, tx); !ok {
-		return
+	if _, err := s.actor(ctx, tx); err != nil {
+		return result, err
 	}
-	p, _ := access.Current(r.Context())
-	if _, err := tx.ExecContext(r.Context(), `UPDATE identity_households SET name=?,timezone=? WHERE id=?`, input.Name, input.Timezone, p.HouseholdID); err != nil {
-		s.managementError(w, err)
-		return
+	p, _ := access.Current(ctx)
+	if _, err := s.store.saveHouseholdSettings(ctx, tx, input.Name, input.Timezone, p.HouseholdID); err != nil {
+		return result, managementFailure(err)
 	}
 	if err := tx.Commit(); err != nil {
-		s.managementError(w, err)
-		return
+		return result, managementFailure(err)
 	}
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(204)
+
+	return result, nil
 }
 
-func (s *Service) updateModule(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Enabled *bool `json:"enabled"`
-	}
-	if !decode(w, r, &input) {
-		return
-	}
+func (s *Application) UpdateModule(ctx context.Context, client Client, target string, input UpdateModuleInput) (Result, error) {
+	result := Result{}
+
 	if input.Enabled == nil {
-		fail(w, 400, "invalid_module_settings")
-		return
+		return result, fault.New(fault.Invalid, "invalid_module_settings")
 	}
-	err := s.modules.SetHouseholdEnabled(r.Context(), r.PathValue("id"), *input.Enabled, func(tx *sql.Tx) error {
-		_, err := s.managementActor(r.Context(), tx)
+	err := s.modules.SetHouseholdEnabled(ctx, target, *input.Enabled, func(tx unitofwork.Transaction) error {
+		_, err := s.managementActor(ctx, tx)
 		return err
 	})
 	if err != nil {
-		s.managementError(w, err)
-		return
+		return result, managementFailure(err)
 	}
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(204)
+
+	return result, nil
 }

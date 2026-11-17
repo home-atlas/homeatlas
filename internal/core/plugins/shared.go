@@ -3,10 +3,11 @@ package plugins
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"errors"
 	"slices"
 	"unicode/utf8"
+
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
 )
 
 type sharedRecord struct{ Key, ID, Owner, Member, Value string }
@@ -20,17 +21,15 @@ type sharedGrant struct {
 	Key        string `json:"-"`
 }
 
-func (a *storageAction) currentSharedRevision(ctx context.Context, q rowQueryer) (int64, error) {
-	var v int64
-	err := q.QueryRowContext(ctx, "SELECT revision FROM plugin_shared_scopes WHERE plugin_id=? AND household_id=?", a.plugin, a.principal.HouseholdID).Scan(&v)
-	if errors.Is(err, sql.ErrNoRows) {
+func (a *storageAction) currentSharedRevision(ctx context.Context, tx unitofwork.Transaction) (int64, error) {
+	v, err := a.store.repository.sharedRevision(ctx, tx, a.plugin, a.principal.HouseholdID)
+	if errors.Is(err, unitofwork.ErrNotFound) {
 		return 0, nil
 	}
 	return v, err
 }
-func (a *storageAction) requireCap(ctx context.Context, q rowQueryer, cap string) error {
-	var ok bool
-	err := q.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM identity_permissions WHERE user_id=? AND household_id=? AND capability=?)", a.principal.UserID, a.principal.HouseholdID, a.plugin+"."+cap).Scan(&ok)
+func (a *storageAction) requireCap(ctx context.Context, tx unitofwork.Transaction, cap string) error {
+	ok, err := a.store.repository.hasCapability(ctx, tx, a.plugin, a.principal, cap)
 	if err != nil {
 		return err
 	}
@@ -42,30 +41,25 @@ func (a *storageAction) requireCap(ctx context.Context, q rowQueryer, cap string
 func (a *storageAction) own(r *sharedRecord) bool {
 	return r != nil && r.Owner == a.principal.UserID && r.Member != "" && r.Member == a.principal.MembershipID
 }
-func (a *storageAction) loadShared(ctx context.Context, q rowQueryer, key string) (*sharedRecord, error) {
-	r := &sharedRecord{Key: key}
-	err := q.QueryRowContext(ctx, "SELECT record_id,owner_user_id,owner_member_id,value FROM plugin_shared_records WHERE plugin_id=? AND household_id=? AND key=?", a.plugin, a.principal.HouseholdID, key).Scan(&r.ID, &r.Owner, &r.Member, &r.Value)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	return r, err
+func (a *storageAction) loadShared(ctx context.Context, tx unitofwork.Transaction, key string) (*sharedRecord, error) {
+	return a.store.repository.sharedRecord(ctx, tx, a.plugin, a.principal.HouseholdID, key)
+
 }
 func (a *storageAction) currentShared(ctx context.Context, key string) (*sharedRecord, error) {
 	if c, ok := a.sharedPending[key]; ok {
 		return c.after, nil
 	}
-	return a.loadShared(ctx, a.store.db, key)
+	return a.loadShared(ctx, nil, key)
 }
-func (a *storageAction) sharedAccess(ctx context.Context, q rowQueryer, r *sharedRecord, write bool) error {
+func (a *storageAction) sharedAccess(ctx context.Context, tx unitofwork.Transaction, r *sharedRecord, write bool) error {
 	if r == nil {
 		return ErrStorageDenied
 	}
 	if a.own(r) {
 		return nil
 	}
-	var permission string
-	err := q.QueryRowContext(ctx, "SELECT permission FROM plugin_shared_grants WHERE plugin_id=? AND household_id=? AND record_id=? AND user_id=? AND member_id=?", a.plugin, a.principal.HouseholdID, r.ID, a.principal.UserID, a.principal.MembershipID).Scan(&permission)
-	if errors.Is(err, sql.ErrNoRows) {
+	permission, err := a.store.repository.grant(ctx, tx, a.plugin, a.principal, r.ID)
+	if errors.Is(err, unitofwork.ErrNotFound) {
 		return ErrStorageDenied
 	}
 	if err != nil {
@@ -76,12 +70,9 @@ func (a *storageAction) sharedAccess(ctx context.Context, q rowQueryer, r *share
 	}
 	return nil
 }
-func (a *storageAction) target(ctx context.Context, q rowQueryer, user, permission string) (string, error) {
-	var member string
-	err := q.QueryRowContext(ctx, `SELECT mi.id FROM identity_member_ids mi WHERE mi.household_id=? AND mi.user_id=?
- AND EXISTS(SELECT 1 FROM identity_permissions WHERE household_id=mi.household_id AND user_id=mi.user_id AND capability=?)
- AND (?='read' OR EXISTS(SELECT 1 FROM identity_permissions WHERE household_id=mi.household_id AND user_id=mi.user_id AND capability=?))`, a.principal.HouseholdID, user, a.plugin+".read", permission, a.plugin+".write").Scan(&member)
-	if errors.Is(err, sql.ErrNoRows) {
+func (a *storageAction) target(ctx context.Context, tx unitofwork.Transaction, user, permission string) (string, error) {
+	member, err := a.store.repository.recipient(ctx, tx, a.plugin, a.principal.HouseholdID, user, permission)
+	if errors.Is(err, unitofwork.ErrNotFound) {
 		return "", ErrStorageDenied
 	}
 	return member, err
@@ -91,10 +82,10 @@ func (a *storageAction) sharedCall(ctx context.Context, req storageRequest) (sto
 		return storageResponse{}, ErrStorageDenied
 	}
 	a.sharedTouched = true
-	if err := a.authorize(ctx, a.store.db, false); err != nil {
+	if err := a.authorize(ctx, nil, false); err != nil {
 		return storageResponse{}, err
 	}
-	rev, err := a.currentSharedRevision(ctx, a.store.db)
+	rev, err := a.currentSharedRevision(ctx, nil)
 	if err != nil {
 		return storageResponse{}, err
 	}
@@ -122,7 +113,7 @@ func (a *storageAction) sharedCall(ctx context.Context, req storageRequest) (sto
 		if req.Value != nil || req.User != "" || req.Permission != "" {
 			return storageResponse{}, errStorageInvalid
 		}
-		if err := a.sharedAccess(ctx, a.store.db, r, false); errors.Is(err, ErrStorageDenied) {
+		if err := a.sharedAccess(ctx, nil, r, false); errors.Is(err, ErrStorageDenied) {
 			return storageResponse{OK: true}, nil
 		} else if err != nil {
 			return storageResponse{}, err
@@ -132,7 +123,7 @@ func (a *storageAction) sharedCall(ctx context.Context, req storageRequest) (sto
 		if a.readOnly {
 			return storageResponse{}, ErrStorageDenied
 		}
-		if err := a.requireCap(ctx, a.store.db, "write"); err != nil {
+		if err := a.requireCap(ctx, nil, "write"); err != nil {
 			return storageResponse{}, err
 		}
 		if req.User != "" || req.Permission != "" {
@@ -145,7 +136,7 @@ func (a *storageAction) sharedCall(ctx context.Context, req storageRequest) (sto
 			return storageResponse{}, errStorageInvalid
 		}
 		if r != nil {
-			if err := a.sharedAccess(ctx, a.store.db, r, true); err != nil {
+			if err := a.sharedAccess(ctx, nil, r, true); err != nil {
 				return storageResponse{}, err
 			}
 		}
@@ -177,7 +168,7 @@ func (a *storageAction) sharedCall(ctx context.Context, req storageRequest) (sto
 		if a.readOnly || !a.own(r) {
 			return storageResponse{}, ErrStorageDenied
 		}
-		if err := a.requireCap(ctx, a.store.db, "share"); err != nil {
+		if err := a.requireCap(ctx, nil, "share"); err != nil {
 			return storageResponse{}, err
 		}
 		if req.Value != nil || !storageIdentity.MatchString(req.User) || req.User == r.Owner {
@@ -193,7 +184,7 @@ func (a *storageAction) sharedCall(ctx context.Context, req storageRequest) (sto
 			if req.Permission != "read" && req.Permission != "write" {
 				return storageResponse{}, errStorageInvalid
 			}
-			member, err := a.target(ctx, a.store.db, req.User, req.Permission)
+			member, err := a.target(ctx, nil, req.User, req.Permission)
 			if err != nil {
 				return storageResponse{}, err
 			}
@@ -214,34 +205,16 @@ func (a *storageAction) listShared(ctx context.Context, req storageRequest) (sto
 	}
 	take := limit + len(a.sharedPending) + 1
 	keys := map[string]bool{}
-	for _, query := range []string{
-		"SELECT key FROM plugin_shared_records WHERE plugin_id=? AND household_id=? AND owner_user_id=? AND owner_member_id=? AND key>? ORDER BY key LIMIT ?",
-		"SELECT key FROM plugin_shared_grants WHERE plugin_id=? AND household_id=? AND user_id=? AND member_id=? AND key>? ORDER BY key LIMIT ?",
-	} {
-		rows, err := a.store.db.QueryContext(ctx, query, a.plugin, a.principal.HouseholdID, a.principal.UserID, a.principal.MembershipID, req.After, take)
-		if err != nil {
-			return storageResponse{}, err
-		}
-		for rows.Next() {
-			var key string
-			if err := rows.Scan(&key); err != nil {
-				rows.Close()
-				return storageResponse{}, err
-			}
-			keys[key] = true
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return storageResponse{}, err
-		}
+	keys, err := a.store.repository.sharedKeys(ctx, a.plugin, a.principal, req.After, take)
+	if err != nil {
+		return storageResponse{}, err
 	}
 	for key, c := range a.sharedPending {
 		if key > req.After {
 			if c.after == nil {
 				delete(keys, key)
 			} else {
-				err := a.sharedAccess(ctx, a.store.db, c.after, false)
+				err := a.sharedAccess(ctx, nil, c.after, false)
 				if err == nil {
 					keys[key] = true
 				} else if !errors.Is(err, ErrStorageDenied) {
@@ -267,7 +240,7 @@ func (a *storageAction) listGrants(ctx context.Context, r *sharedRecord, req sto
 	if !a.own(r) {
 		return storageResponse{}, ErrStorageDenied
 	}
-	if err := a.requireCap(ctx, a.store.db, "share"); err != nil {
+	if err := a.requireCap(ctx, nil, "share"); err != nil {
 		return storageResponse{}, err
 	}
 	if req.Value != nil || req.User != "" || req.Permission != "" || (req.After != "" && !storageIdentity.MatchString(req.After)) || req.Limit < 0 || req.Limit > StoragePageKeys {
@@ -277,21 +250,7 @@ func (a *storageAction) listGrants(ctx context.Context, r *sharedRecord, req sto
 	if limit == 0 {
 		limit = StoragePageKeys
 	}
-	rows, err := a.store.db.QueryContext(ctx, `SELECT g.user_id,g.member_id,g.permission FROM plugin_shared_grants g JOIN identity_member_ids m ON m.user_id=g.user_id AND m.household_id=g.household_id AND m.id=g.member_id WHERE g.plugin_id=? AND g.household_id=? AND g.record_id=? AND g.user_id>? ORDER BY g.user_id LIMIT ?`, a.plugin, a.principal.HouseholdID, r.ID, req.After, limit+len(a.grantsPending)+1)
-	if err != nil {
-		return storageResponse{}, err
-	}
-	found := map[string]sharedGrant{}
-	for rows.Next() {
-		g := sharedGrant{}
-		if err := rows.Scan(&g.User, &g.Member, &g.Permission); err != nil {
-			rows.Close()
-			return storageResponse{}, err
-		}
-		found[g.User] = g
-	}
-	err = rows.Err()
-	rows.Close()
+	found, err := a.store.repository.grants(ctx, a.plugin, a.principal.HouseholdID, r.ID, req.After, limit+len(a.grantsPending)+1)
 	if err != nil {
 		return storageResponse{}, err
 	}
@@ -319,7 +278,7 @@ func (a *storageAction) listGrants(ctx context.Context, r *sharedRecord, req sto
 	}
 	return result, nil
 }
-func (a *storageAction) commitShared(ctx context.Context, tx *sql.Tx) error {
+func (a *storageAction) commitShared(ctx context.Context, tx unitofwork.Transaction) error {
 	if !a.sharedTouched {
 		return nil
 	}
@@ -377,11 +336,11 @@ func (a *storageAction) commitShared(ctx context.Context, tx *sql.Tx) error {
 				}
 			}
 			if r == nil {
-				r = &sharedRecord{}
-				err := tx.QueryRowContext(ctx, "SELECT key,record_id,owner_user_id,owner_member_id FROM plugin_shared_records WHERE plugin_id=? AND household_id=? AND record_id=?", a.plugin, a.principal.HouseholdID, k.record).Scan(&r.Key, &r.ID, &r.Owner, &r.Member)
+				r, err = a.store.repository.sharedByID(ctx, tx, a.plugin, a.principal.HouseholdID, k.record)
 				if err != nil {
 					return err
 				}
+
 			}
 		}
 		if !a.own(r) {
@@ -400,32 +359,5 @@ func (a *storageAction) commitShared(ctx context.Context, tx *sql.Tx) error {
 	if len(a.sharedPending) == 0 && len(a.grantsPending) == 0 {
 		return nil
 	}
-	p := a.principal
-	if _, err := tx.ExecContext(ctx, "INSERT INTO plugin_shared_scopes VALUES(?,?,1) ON CONFLICT(plugin_id,household_id) DO UPDATE SET revision=revision+1", a.plugin, p.HouseholdID); err != nil {
-		return err
-	}
-	for key, c := range a.sharedPending {
-		if c.before != nil && (c.after == nil || c.before.ID != c.after.ID) {
-			if _, err := tx.ExecContext(ctx, "DELETE FROM plugin_shared_records WHERE plugin_id=? AND household_id=? AND key=?", a.plugin, p.HouseholdID, key); err != nil {
-				return err
-			}
-		}
-		if c.after != nil {
-			r := c.after
-			if _, err := tx.ExecContext(ctx, `INSERT INTO plugin_shared_records VALUES(?,?,?,?,?,?,?) ON CONFLICT(plugin_id,household_id,key) DO UPDATE SET value=excluded.value`, a.plugin, p.HouseholdID, r.Key, r.ID, r.Owner, r.Member, r.Value); err != nil {
-				return err
-			}
-		}
-	}
-	for k, g := range a.grantsPending {
-		if g == nil {
-			_, err = tx.ExecContext(ctx, "DELETE FROM plugin_shared_grants WHERE plugin_id=? AND household_id=? AND record_id=? AND user_id=?", a.plugin, p.HouseholdID, k.record, k.user)
-		} else {
-			_, err = tx.ExecContext(ctx, `INSERT INTO plugin_shared_grants VALUES(?,?,?,?,?,?,?) ON CONFLICT(plugin_id,household_id,record_id,user_id) DO UPDATE SET member_id=excluded.member_id,permission=excluded.permission`, a.plugin, p.HouseholdID, g.Record, g.Key, g.User, g.Member, g.Permission)
-		}
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	return a.store.repository.writeShared(ctx, tx, a.plugin, a.principal, a.sharedPending, a.grantsPending)
 }

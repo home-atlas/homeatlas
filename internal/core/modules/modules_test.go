@@ -2,7 +2,6 @@ package modules_test
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +11,7 @@ import (
 	"github.com/home-atlas/homeatlas/internal/core/access"
 	"github.com/home-atlas/homeatlas/internal/core/database"
 	"github.com/home-atlas/homeatlas/internal/core/modules"
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
 )
 
 // A second in-memory module proves the Core contract independently of Documents.
@@ -74,9 +74,9 @@ func TestHouseholdDependenciesAuthorizationAndInstallationBounds(t *testing.T) {
 		}
 	}
 	ctx := access.WithPrincipal(context.Background(), access.Principal{UserID: "operator", HouseholdID: "home-a"})
-	allow := func(*sql.Tx) error { return nil }
+	allow := func(unitofwork.Transaction) error { return nil }
 	denied := errors.New("denied")
-	if err := r.SetHouseholdEnabled(ctx, "dependent", false, func(*sql.Tx) error { return denied }); !errors.Is(err, denied) {
+	if err := r.SetHouseholdEnabled(ctx, "dependent", false, func(unitofwork.Transaction) error { return denied }); !errors.Is(err, denied) {
 		t.Fatal("authorization bypassed")
 	}
 	if err := r.SetHouseholdEnabled(context.Background(), "dependent", false, allow); !errors.Is(err, modules.ErrHouseholdRequired) {

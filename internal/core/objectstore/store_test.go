@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/home-atlas/homeatlas/internal/core/database"
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
 	"github.com/home-atlas/homeatlas/internal/testsupport/s3test"
 )
 
@@ -37,7 +38,7 @@ func fixture(t *testing.T) (*Store, *s3test.Server) {
 func config(server *s3test.Server) Settings {
 	return Settings{Provider: "s3", S3: S3Config{Endpoint: server.URL, Region: "us-east-1", Bucket: "private-bucket", Prefix: "homeatlas", PathStyle: true, AccessKey: "fixture-access", SecretKey: "fixture-secret"}}
 }
-func allow(*sql.Tx) error { return nil }
+func allow(unitofwork.Transaction) error { return nil }
 func TestLocationsSurviveSwitchesRestartAndCorruption(t *testing.T) {
 	s, server := fixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -61,7 +62,7 @@ func TestLocationsSurviveSwitchesRestartAndCorruption(t *testing.T) {
 		t.Fatal("credentials exposed", string(raw))
 	}
 	var sealed []byte
-	if err = s.db.QueryRow("SELECT sealed FROM file_storage_profiles").Scan(&sealed); err != nil || bytes.Contains(sealed, []byte("fixture-secret")) {
+	if err = s.repository.db.QueryRow("SELECT sealed FROM file_storage_profiles").Scan(&sealed); err != nil || bytes.Contains(sealed, []byte("fixture-secret")) {
 		t.Fatal("credentials plaintext", err)
 	}
 	file, err := os.CreateTemp(s.dir, "input")
@@ -76,7 +77,7 @@ func TestLocationsSurviveSwitchesRestartAndCorruption(t *testing.T) {
 	if err != nil || pending == nil {
 		t.Fatal(err)
 	}
-	tx, _ := s.db.BeginTx(ctx, nil)
+	tx, _ := s.repository.db.BeginTx(ctx, nil)
 	if err = pending.Publish(ctx, tx); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +85,7 @@ func TestLocationsSurviveSwitchesRestartAndCorruption(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Backup export holds the only live DB connection; lookups must use that transaction.
-	tx, _ = s.db.BeginTx(ctx, nil)
+	tx, _ = s.repository.db.BeginTx(ctx, nil)
 	f, cleanup, err := s.OpenFrom(ctx, tx, "documents", "original")
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +127,7 @@ func TestLocationsSurviveSwitchesRestartAndCorruption(t *testing.T) {
 	if err = s.Save(ctx, "home", Settings{Provider: "local", Revision: settings.Revision}, allow); err != nil {
 		t.Fatal(err)
 	}
-	restarted, err := New(ctx, s.db, s.dir)
+	restarted, err := New(ctx, s.repository.db, s.dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +158,7 @@ func TestSettingsFailuresConflictPermissionAndKeyBinding(t *testing.T) {
 	ctx := context.Background()
 	input := config(server)
 	denied := errors.New("revoked owner")
-	if err := s.Save(ctx, "home", input, func(*sql.Tx) error { return denied }); !errors.Is(err, denied) {
+	if err := s.Save(ctx, "home", input, func(unitofwork.Transaction) error { return denied }); !errors.Is(err, denied) {
 		t.Fatal(err)
 	}
 	got, _ := s.Settings(ctx, "home")
@@ -188,8 +189,8 @@ func TestSettingsFailuresConflictPermissionAndKeyBinding(t *testing.T) {
 	// Swapping ciphertext between profile identities must fail authentication.
 	_, id, _ := s.current(ctx, "home")
 	var sealed []byte
-	s.db.QueryRow("SELECT sealed FROM file_storage_profiles WHERE id=?", id).Scan(&sealed)
-	s.db.Exec("INSERT INTO file_storage_profiles VALUES('swapped','other',?)", sealed)
+	s.repository.db.QueryRow("SELECT sealed FROM file_storage_profiles WHERE id=?", id).Scan(&sealed)
+	s.repository.db.Exec("INSERT INTO file_storage_profiles VALUES('swapped','other',?)", sealed)
 	if _, _, err := s.profile(ctx, "swapped"); !errors.Is(err, Unavailable) {
 		t.Fatal("unbound encrypted credentials", err)
 	}

@@ -108,7 +108,7 @@ func TestStorageNamespacesRevocationMembershipsAndReadOnly(t *testing.T) {
 	}
 	writer := beginStorage(t, s, ctx, "ext-test", false)
 	setStorage(t, writer, ctx, "secret", "revoked")
-	if _, err := s.db.Exec("DELETE FROM identity_permissions WHERE user_id='alice' AND household_id='home-a' AND capability='ext-test.write'"); err != nil {
+	if _, err := s.repository.db.Exec("DELETE FROM identity_permissions WHERE user_id='alice' AND household_id='home-a' AND capability='ext-test.write'"); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.commit(ctx); !errors.Is(err, ErrStorageDenied) {
@@ -118,7 +118,7 @@ func TestStorageNamespacesRevocationMembershipsAndReadOnly(t *testing.T) {
 	if r := getStorage(t, reader, ctx, "secret"); *r.Value != "alice private" {
 		t.Fatal("revoked write changed data")
 	}
-	if _, err := s.db.Exec("UPDATE identity_member_ids SET id='alice-rejoined' WHERE id='alice-a'"); err != nil {
+	if _, err := s.repository.db.Exec("UPDATE identity_member_ids SET id='alice-rejoined' WHERE id='alice-a'"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.begin(ctx, &Package{Manifest: Manifest{ID: "ext-test", Storage: "user"}}, true); !errors.Is(err, ErrStorageDenied) {
@@ -129,7 +129,7 @@ func TestStorageNamespacesRevocationMembershipsAndReadOnly(t *testing.T) {
 	if r := getStorage(t, reader, newCtx, "secret"); r.Found {
 		t.Fatal("reinvitation resurrected private data")
 	}
-	if _, err := s.db.Exec("INSERT INTO household_module_states VALUES('home-a','ext-test',0)"); err != nil {
+	if _, err := s.repository.db.Exec("INSERT INTO household_module_states VALUES('home-a','ext-test',0)"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.begin(newCtx, &Package{Manifest: Manifest{ID: "ext-test", Storage: "user"}}, true); !errors.Is(err, ErrStorageDenied) {
@@ -275,7 +275,7 @@ func TestStorageWASIBridgeStagesAtomicallyAndUsesCurrentCaller(t *testing.T) {
 		}
 		cancel()
 		var count int
-		s.db.QueryRow("SELECT count(*) FROM plugin_storage_records").Scan(&count)
+		s.repository.db.QueryRow("SELECT count(*) FROM plugin_storage_records").Scan(&count)
 		if count != 0 {
 			t.Fatal("failed guest leaked mutation", ending)
 		}
@@ -293,13 +293,13 @@ func TestStorageWASIBridgeStagesAtomicallyAndUsesCurrentCaller(t *testing.T) {
 		}
 	}
 	var count int
-	if err := s.db.QueryRow("SELECT count(*) FROM plugin_storage_records").Scan(&count); err != nil || count != 3 {
+	if err := s.repository.db.QueryRow("SELECT count(*) FROM plugin_storage_records").Scan(&count); err != nil || count != 3 {
 		t.Fatal("cached guest used wrong caller scope", count, err)
 	}
 	if _, err := e.Run(ctx, storagePackage(t, []string{`{"op":"set","key":"bad","value":"x"}`, `{"op":"get","key":"../escape"}`}, "", false), "calculate", nil); err == nil {
 		t.Fatal("ignored host failure committed")
 	}
-	if err := s.db.QueryRow("SELECT count(*) FROM plugin_storage_records WHERE key='bad'").Scan(&count); err != nil || count != 0 {
+	if err := s.repository.db.QueryRow("SELECT count(*) FROM plugin_storage_records WHERE key='bad'").Scan(&count); err != nil || count != 0 {
 		t.Fatal("ignored failure leaked writes")
 	}
 	if _, err := e.Run(ctx, storagePackage(t, []string{set}, "", true), "calculate", nil); !errors.Is(err, ErrStorageDenied) {
@@ -310,7 +310,7 @@ func TestStorageWASIBridgeStagesAtomicallyAndUsesCurrentCaller(t *testing.T) {
 func TestStorageCommitRollsBackAllStatements(t *testing.T) {
 	s := storageFixture(t)
 	ctx := storageContext("alice", "home-a", "alice-a")
-	if _, err := s.db.Exec(`CREATE TRIGGER fail_storage BEFORE INSERT ON plugin_storage_records WHEN new.key='fail' BEGIN SELECT RAISE(ABORT,'test failure'); END`); err != nil {
+	if _, err := s.repository.db.Exec(`CREATE TRIGGER fail_storage BEFORE INSERT ON plugin_storage_records WHEN new.key='fail' BEGIN SELECT RAISE(ABORT,'test failure'); END`); err != nil {
 		t.Fatal(err)
 	}
 	a := beginStorage(t, s, ctx, "ext-test", false)
@@ -320,11 +320,11 @@ func TestStorageCommitRollsBackAllStatements(t *testing.T) {
 		t.Fatal("failed transaction committed")
 	}
 	var count int
-	s.db.QueryRow("SELECT count(*) FROM plugin_storage_records").Scan(&count)
+	s.repository.db.QueryRow("SELECT count(*) FROM plugin_storage_records").Scan(&count)
 	if count != 0 {
 		t.Fatal("partial records committed")
 	}
-	s.db.QueryRow("SELECT count(*) FROM plugin_storage_scopes").Scan(&count)
+	s.repository.db.QueryRow("SELECT count(*) FROM plugin_storage_scopes").Scan(&count)
 	if count != 0 {
 		t.Fatal("partial namespace committed")
 	}

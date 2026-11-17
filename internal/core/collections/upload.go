@@ -15,6 +15,7 @@ import (
 	"github.com/home-atlas/homeatlas/internal/core/access"
 	"github.com/home-atlas/homeatlas/internal/core/backup"
 	"github.com/home-atlas/homeatlas/internal/core/objectstore"
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
 )
 
 // UploadInput is transport independent. Trusted application callers supply an
@@ -141,7 +142,7 @@ func (u *uploadState) commit(ctx context.Context, raw []byte) (Item, error) {
 		return Item{}, uploadFailure("storage_unavailable", err)
 	}
 	item := Item{OwnerID: p.UserID, ID: u.id, Title: value.Title, Category: value.Category, Description: value.Description, Tags: value.Tags, Filename: u.filename, MediaType: mediaType, Size: u.size, SHA256: u.checksum, HasFile: true, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	if err := m.persistUpload(ctx, item, u.remote); err != nil {
+	if err := m.repository.publish(ctx, p, item, u.remote, func(tx unitofwork.Transaction) error { return m.authorizeMutation(ctx, tx, "write") }); err != nil {
 		return Item{}, err
 	}
 	u.kept = true

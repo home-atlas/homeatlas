@@ -6,26 +6,17 @@ import (
 
 	"github.com/home-atlas/homeatlas/internal/core/access"
 	"github.com/home-atlas/homeatlas/internal/core/objectstore"
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
 )
 
-func (m *Module) persistUpload(ctx context.Context, item Item, remote *objectstore.Pending) error {
-	p, _ := access.Current(ctx)
-	tx, err := m.db.BeginTx(ctx, nil)
+func (s *sqliteRepository) publish(ctx context.Context, p access.Principal, item Item, remote *objectstore.Pending, authorize func(unitofwork.Transaction) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return uploadFailure("items_unavailable", err)
 	}
 	defer tx.Rollback()
-	if err := m.authorizeMutation(ctx, tx.Tx, "write"); err != nil {
+	if err := authorize(tx); err != nil {
 		return uploadFailure("permission_denied", err)
-	}
-	// Non-HTTP callers need the same activation check as the module HTTP registry.
-	var enabled bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM module_states m WHERE m.id=? AND m.enabled=1
- AND NOT EXISTS(SELECT 1 FROM household_module_states h WHERE h.module_id=m.id AND h.household_id=? AND h.enabled=0))`, m.config.ID, p.HouseholdID).Scan(&enabled); err != nil {
-		return uploadFailure("items_unavailable", err)
-	}
-	if !enabled {
-		return uploadFailure("permission_denied", nil)
 	}
 	tags, _ := json.Marshal(item.Tags)
 	_, err = tx.ExecContext(ctx, `INSERT INTO collection_items
@@ -35,7 +26,7 @@ func (m *Module) persistUpload(ctx context.Context, item Item, remote *objectsto
 		return uploadFailure("items_unavailable", err)
 	}
 	if remote != nil {
-		if err := remote.Publish(ctx, tx.Tx); err != nil {
+		if err := remote.Publish(ctx, tx); err != nil {
 			return uploadFailure("storage_unavailable", err)
 		}
 	}
