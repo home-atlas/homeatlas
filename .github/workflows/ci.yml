@@ -115,7 +115,7 @@ jobs:
 
   deploy:
     needs: release
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.LAB_DEPLOY_ENABLED == 'true'
     permissions:
       contents: read
       id-token: write

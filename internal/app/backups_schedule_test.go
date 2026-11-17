@@ -379,12 +379,14 @@ func TestScheduleValidationPermissionsCSRFAndPasswordBinding(t *testing.T) {
 func TestSchedulerRestartMissedRunIsolationAndExclusion(t *testing.T) {
 	f := newScheduleFixture(t, true)
 	f.enable(t, 2)
-	f.b.mu.Lock()
+	if err := f.b.resources.Acquire(context.Background(), backupLockCapacity); err != nil {
+		t.Fatal(err)
+	}
 	f.b.runDueSchedule(context.Background(), time.Now().Add(48*time.Hour))
 	if w := f.request("POST", "/api/household/backups/schedule/run", nil, "", ""); w.Code != 423 {
 		t.Fatal("parallel backup accepted", w.Code)
 	}
-	f.b.mu.Unlock()
+	f.b.resources.Release(backupLockCapacity)
 	if len(f.history(t)) != 0 {
 		t.Fatal("busy worker created history")
 	}

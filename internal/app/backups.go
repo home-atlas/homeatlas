@@ -1,9 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"mime"
 	"net/http"
 	"os"
@@ -12,6 +14,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/semaphore"
 
 	"github.com/home-atlas/homeatlas/internal/core/access"
 	"github.com/home-atlas/homeatlas/internal/core/backup"
@@ -39,6 +43,9 @@ func responseDeadline(w http.ResponseWriter, budget time.Duration) error {
 // Streamed on disk; plugin records can exceed the former metadata-only bound.
 const maxSnapshotBytes int64 = 128 << 20
 const maxBackupFiles = 10000
+
+// One permit per request; taking all permits excludes readers during a restore.
+const backupLockCapacity int64 = 1 << 60
 
 var backupKey = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 var errBackupDenied = errors.New("backup denied")
@@ -95,9 +102,9 @@ type householdBackups struct {
 	db              *sql.DB
 	accounts        *identity.Service
 	dataDir         string
-	mu              sync.RWMutex
+	resources       *semaphore.Weighted
 	operations      sync.Mutex
-	mutations       sync.Mutex
+	mutations       *semaphore.Weighted
 	readOnlyActions map[string]bool
 }
 
@@ -105,7 +112,7 @@ func newBackups(ctx context.Context, db *sql.DB, accounts *identity.Service, dat
 	if err := database.Apply(ctx, db, "app.household-backups", []database.Migration{{Version: 1, SQL: `INSERT OR IGNORE INTO identity_permissions(user_id,household_id,capability) SELECT user_id,household_id,'household.backup' FROM identity_memberships WHERE role='owner';`}}); err != nil {
 		return nil, err
 	}
-	b := &householdBackups{db: db, accounts: accounts, dataDir: dataDir, participants: participants}
+	b := &householdBackups{db: db, accounts: accounts, dataDir: dataDir, participants: participants, resources: semaphore.NewWeighted(backupLockCapacity), mutations: semaphore.NewWeighted(1)}
 	if err := b.validateParticipants(); err != nil {
 		return nil, err
 	}
@@ -118,6 +125,20 @@ func newBackups(ctx context.Context, db *sql.DB, accounts *identity.Service, dat
 // Exports freeze mutations but permit readers. Restores exclude all operations.
 func (b *householdBackups) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// JSON handlers accept at most 16 KiB. Buffer one extra byte so their
+		// existing limits reject oversized input without reading under a lock.
+		contentType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if r.Body != nil && contentType == "application/json" && r.Method != "GET" && r.Method != "HEAD" && r.Method != "OPTIONS" {
+			body, err := io.ReadAll(io.LimitReader(r.Body, (16<<10)+1))
+			if err != nil {
+				backupFail(w, 400, "invalid_request")
+				return
+			}
+			r.Body = struct {
+				io.Reader
+				io.Closer
+			}{io.MultiReader(bytes.NewReader(body), r.Body), r.Body}
+		}
 		export := r.Method == "POST" && (r.URL.Path == "/api/household/backups" || r.URL.Path == "/api/household/backups/schedule/run")
 		exclusive := (r.Method == "POST" && (r.URL.Path == "/api/household/restore" || r.URL.Path == "/api/setup/restore" || r.URL.Path == "/api/household/storage/move")) || (r.Method == "PUT" && r.URL.Path == "/api/household/backups/schedule")
 		if export || exclusive {
@@ -127,36 +148,42 @@ func (b *householdBackups) guard(next http.Handler) http.Handler {
 			}
 			defer b.operations.Unlock()
 			if exclusive {
-				if !b.mu.TryLock() {
+				if !b.resources.TryAcquire(backupLockCapacity) {
 					backupFail(w, 423, "household_busy")
 					return
 				}
-				defer b.mu.Unlock()
+				defer b.resources.Release(backupLockCapacity)
 			} else {
-				if !b.mu.TryRLock() {
+				if !b.resources.TryAcquire(1) {
 					backupFail(w, 423, "household_busy")
 					return
 				}
-				defer b.mu.RUnlock()
-				if !b.mutations.TryLock() {
+				defer b.resources.Release(1)
+				if !b.mutations.TryAcquire(1) {
 					backupFail(w, 423, "household_busy")
 					return
 				}
-				defer b.mutations.Unlock()
+				defer b.mutations.Release(1)
 			}
 		} else {
 			waited := false
-			if !b.mu.TryRLock() {
+			if !b.resources.TryAcquire(1) {
 				waited = true
-				b.mu.RLock()
-			}
-			defer b.mu.RUnlock()
-			if r.Method != "GET" && r.Method != "HEAD" && r.Method != "OPTIONS" && !b.readOnlyActions[r.Method+" "+r.URL.Path] {
-				if !b.mutations.TryLock() {
-					waited = true
-					b.mutations.Lock()
+				if err := b.resources.Acquire(r.Context(), 1); err != nil {
+					backupFail(w, 408, "request_cancelled")
+					return
 				}
-				defer b.mutations.Unlock()
+			}
+			defer b.resources.Release(1)
+			if r.Method != "GET" && r.Method != "HEAD" && r.Method != "OPTIONS" && !b.readOnlyActions[r.Method+" "+r.URL.Path] {
+				if !b.mutations.TryAcquire(1) {
+					waited = true
+					if err := b.mutations.Acquire(r.Context(), 1); err != nil {
+						backupFail(w, 408, "request_cancelled")
+						return
+					}
+				}
+				defer b.mutations.Release(1)
 			}
 			// Queue time must not consume the normal server's response budget.
 			// Authentication still runs below; read/body deadlines stay unchanged.
@@ -166,6 +193,10 @@ func (b *householdBackups) guard(next http.Handler) http.Handler {
 					return
 				}
 			}
+		}
+		if r.Context().Err() != nil {
+			backupFail(w, 408, "request_cancelled")
+			return
 		}
 		next.ServeHTTP(w, r)
 	})

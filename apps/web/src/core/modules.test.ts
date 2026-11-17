@@ -11,6 +11,25 @@ function fixture(enabled: boolean): ModuleStatus {
 }
 
 describe('built-in module registration', () => {
+  it('preserves core routes when a catalog entry collides with them', async () => {
+    for (const id of ['home', 'verify-email', 'activate-access', 'forgot-password']) {
+      const path = id === 'home' ? '/' : '/' + id
+      const router = createRouter({ history: createMemoryHistory(), routes: [{ name: id, path, component: {} }] })
+      const plugin = { ...fixture(true), id, runtime: 'wasi-preview1', navigation: { label: id, path: '/' + id } }
+      await expect(registerModules(router, [plugin])).rejects.toThrow('incompatible')
+      expect(router.resolve(path).name).toBe(id)
+      expect(router.getRoutes()).toHaveLength(1)
+    }
+  })
+
+  it('rejects route name collisions between plugins without registering a partial catalog', async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [] })
+    const plugin = { ...fixture(true), id: 'ext-tools', runtime: 'wasi-preview1', navigation: { label: 'Tools', path: '/ext-tools' } }
+    const other = { ...plugin, id: 'ext-tools-view', navigation: { label: 'Other', path: '/ext-tools-view' } }
+    await expect(registerModules(router, [plugin, other])).rejects.toThrow('incompatible')
+    expect(router.getRoutes()).toHaveLength(0)
+  })
+
   it('removes and restores routes in the same router without duplicates', async () => {
     const router = createRouter({ history: createMemoryHistory(), routes: [] })
     await registerModules(router, [fixture(true)])

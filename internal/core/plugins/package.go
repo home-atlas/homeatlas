@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/home-atlas/homeatlas/internal/core/collections"
+	"github.com/home-atlas/homeatlas/internal/core/modules"
 	"io"
 	"os"
 	"path/filepath"
@@ -23,7 +24,6 @@ const MaxPackageBytes = 10 << 20
 const maxWasmBytes = 8 << 20
 const maxPlugins = 8
 
-var pluginID = regexp.MustCompile(`^[a-z][a-z0-9-]{0,47}$`)
 var key = regexp.MustCompile(`^[a-z][a-z0-9_]{0,47}$`)
 
 type Field struct {
@@ -145,7 +145,7 @@ func Read(data []byte) (*Package, error) {
 		return nil, err
 	}
 	m := p.Manifest
-	if m.ContractVersion != "1" || (m.Storage != "" && m.Storage != "user" && m.Storage != "shared") || !pluginID.MatchString(m.ID) || !text(m.Name, 100) || !text(m.Version, 40) || len(m.Views) < 1 || len(m.Views) > 8 || m.WasmSHA256 != fmt.Sprintf("%x", sha256.Sum256(p.wasm)) {
+	if m.ContractVersion != "1" || (m.Storage != "" && m.Storage != "user" && m.Storage != "shared") || !modules.ValidID(m.ID) || !text(m.Name, 100) || !text(m.Version, 40) || len(m.Views) < 1 || len(m.Views) > 8 || m.WasmSHA256 != fmt.Sprintf("%x", sha256.Sum256(p.wasm)) {
 		return nil, fmt.Errorf("invalid or incompatible plugin manifest")
 	}
 	if m.Collection != nil {
@@ -159,10 +159,6 @@ func Read(data []byte) (*Package, error) {
 		if err := config.Valid(); err != nil {
 			return nil, err
 		}
-	}
-	reserved := map[string]bool{"core": true, "identity": true, "schema": true, "module": true, "plugin": true, "auth": true, "setup": true, "household": true, "health": true, "search": true, "modules": true, "settings": true, "family": true, "login": true, "join": true, "recover": true, "invitations": true, "backups": true, "plugins": true, "plugin-files": true}
-	if reserved[m.ID] {
-		return nil, fmt.Errorf("reserved plugin ID")
 	}
 	if m.Collection == nil && !strings.HasPrefix(m.ID, "ext-") {
 		return nil, fmt.Errorf("non-collection plugins need ext- IDs")
@@ -312,7 +308,7 @@ func Load(dir string) ([]*Package, error) {
 		if strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
-		if !e.IsDir() || !pluginID.MatchString(e.Name()) || len(result) >= maxPlugins {
+		if !e.IsDir() || !modules.ValidID(e.Name()) || len(result) >= maxPlugins {
 			return nil, fmt.Errorf("invalid installed plugin directory")
 		}
 		base := filepath.Join(dir, e.Name())

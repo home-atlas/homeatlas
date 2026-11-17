@@ -84,15 +84,18 @@ func New(ctx context.Context, db *sql.DB) (*Registry, error) {
 	return &Registry{db: db, entries: make(map[string]*entry)}, err
 }
 
-var identifier = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+var identifier = regexp.MustCompile(`^[a-z][a-z0-9-]{0,47}$`)
 var method = regexp.MustCompile(`^[A-Z]+$`)
-var reserved = map[string]bool{"modules": true, "health": true, "search": true, "auth": true, "setup": true, "household": true, "invitations": true, "settings": true, "family": true, "join": true, "login": true, "recover": true, "verify-email": true}
+var reserved = map[string]bool{"api": true, "assets": true, "core": true, "identity": true, "schema": true, "module": true, "plugin": true, "backups": true, "plugins": true, "plugin-files": true, "modules": true, "health": true, "search": true, "auth": true, "setup": true, "household": true, "invitations": true, "settings": true, "family": true, "join": true, "login": true, "recover": true, "verify-email": true, "activate-access": true, "forgot-password": true, "home": true}
+
+// ValidID shares the Core's namespace boundary with package installation.
+func ValidID(id string) bool { return identifier.MatchString(id) && !reserved[id] }
 
 func (r *Registry) Register(ctx context.Context, module Module) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	m := module.Manifest()
-	if !identifier.MatchString(m.ID) || reserved[m.ID] || m.Name == "" || m.Version == "" || m.ContractVersion != ContractVersion || m.Navigation.Path != "/"+m.ID {
+	if !ValidID(m.ID) || m.Name == "" || m.Version == "" || m.ContractVersion != ContractVersion || m.Navigation.Path != "/"+m.ID {
 		return fmt.Errorf("invalid manifest: %q", m.ID)
 	}
 	if _, exists := r.entries[m.ID]; exists {

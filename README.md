@@ -149,9 +149,17 @@ sdk/pluginstorage/    Experimental WASI storage SDK
 scripts/              Packaging, verification and measurement tools
 ```
 
-## Proxmox lab deployment
+## Optional Tailscale lab deployment
 
-[CI and release](.github/workflows/ci.yml) runs critical Go checks, all frontend tests and deployment checks once per workflow run. Pull requests validate only. A merge into `main` runs the same checks, builds Linux amd64 HomeAtlas and Documents, then automatically creates a tag and lab prerelease for that exact commit and calls [Deploy lab](.github/workflows/deploy-lab.yml) through Tailscale SSH. Tags use `v<apps/web/package.json version>-lab.<workflow run number>`; the number can have gaps because PR checks also increment it. No manual tag is needed, and tag pushes do not start another pipeline. Feature branch pushes do not duplicate their PR's CI. Configure the `lab` environment to allow the `main` branch without required reviewers or wait timers, and set `LAB_HOST`, `TS_CLIENT_ID` and `TS_AUDIENCE`. Tailscale trusts the GitHub OIDC identity for this repository's `lab` environment; no permanent Tailscale secret is stored in GitHub. Failed tests, builds or publication skip deployment; manually publishing a release does not trigger it.
+[CI and release](.github/workflows/ci.yml) runs critical Go checks, all frontend tests and deployment checks once per workflow run. Pull requests validate only. A merge into `main` runs the same checks, builds Linux amd64 HomeAtlas and Documents, then automatically creates a tag and prerelease for that exact commit. Tags use `v<apps/web/package.json version>-lab.<workflow run number>`; the number can have gaps because PR checks also increment it. No manual tag is needed, and tag pushes do not start another pipeline. Feature branch pushes do not duplicate their PR's CI.
+
+Deployment is **disabled by default**, including in forks. CI and release publication do not require a VM or a Tailscale account. To enable automatic deployment after a successful release:
+
+1. Configure Tailscale to trust GitHub OIDC for this repository's `lab` environment and restrict its CI identity to the target VM's deployment account and HTTPS health check.
+2. Configure the GitHub `lab` environment to allow `main` without required reviewers or wait timers. Set its `LAB_HOST`, `TS_CLIENT_ID` and `TS_AUDIENCE` variables.
+3. Set the **repository Actions variable** `LAB_DEPLOY_ENABLED` to the exact value `true` under **Settings → Secrets and variables → Actions → Variables**. An environment variable alone cannot enable the caller job. Remove it or set it to `false` to disable deployment while keeping CI and releases.
+
+When enabled, the same pipeline calls [Deploy lab](.github/workflows/deploy-lab.yml) through Tailscale SSH. No permanent Tailscale secret is stored in GitHub. Failed tests, builds or publication skip deployment; manually publishing a release does not trigger it. The exhaustive suite remains manual.
 
 The VM provisioning script and systemd service live in [deploy/proxmox](deploy/proxmox). HomeAtlas listens on `127.0.0.1:8090`; Tailscale Serve supplies private HTTPS on port 8443. Deployment retains a stopped local data copy and restores it with the previous executable if startup fails. This copy is sensitive and does not include remote S3 objects; keep encrypted application backups outside the VM.
 

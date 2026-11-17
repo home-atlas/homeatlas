@@ -329,14 +329,14 @@ func (b *householdBackups) runDueSchedule(ctx context.Context, now time.Time) {
 		return
 	}
 	defer b.operations.Unlock()
-	if !b.mu.TryRLock() {
+	if !b.resources.TryAcquire(1) {
 		return
 	}
-	defer b.mu.RUnlock()
-	if !b.mutations.TryLock() {
+	defer b.resources.Release(1)
+	if !b.mutations.TryAcquire(1) {
 		return
 	}
-	defer b.mutations.Unlock()
+	defer b.mutations.Release(1)
 	s, err := b.loadSchedule(ctx, home)
 	if err != nil || !s.Enabled || s.next > now.Unix() {
 		return

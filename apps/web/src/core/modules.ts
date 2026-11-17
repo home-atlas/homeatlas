@@ -53,6 +53,14 @@ export async function registerModules(router: Router, modules: ModuleStatus[], c
     desired.set(module.id, frontend)
   }
   if (revisions.get(router) !== revision || !current()) return false
+  const ownedNames = new Set([...frontends.get(router)?.values() ?? []].flatMap(frontend => frontend.routes.map(route => route.name)))
+  const names = new Set(router.getRoutes().map(route => route.name).filter(name => name && !ownedNames.has(name)))
+  for (const frontend of desired.values()) {
+    for (const route of frontend.routes) {
+      if (route.name && names.has(route.name)) throw new Error(`Ruta de módulo incompatible: ${String(route.name)}`)
+      if (route.name) names.add(route.name)
+    }
+  }
   for (const [id, remove] of registered) {
     if (!desired.has(id)) { remove.forEach(fn => fn()); registered.delete(id) }
   }
