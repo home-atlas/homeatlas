@@ -24,7 +24,7 @@ const testOrigin = "http://127.0.0.1:8080"
 const testPassword = "a private passphrase for testing"
 const testSetupCode = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
-func newService(t *testing.T, origin string) (*Service, http.Handler, *sql.DB) {
+func newService(t *testing.T, origin string, configure ...func(*Config)) (*Service, http.Handler, *sql.DB) {
 	t.Helper()
 	dir := t.TempDir()
 	db, err := database.Open(filepath.Join(dir, "identityDB(identity)"))
@@ -36,7 +36,11 @@ func newService(t *testing.T, origin string) (*Service, http.Handler, *sql.DB) {
 	if err := os.WriteFile(path, []byte(testSetupCode), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(context.Background(), db, Config{PublicURL: origin, SetupCodePath: path, OwnerCapabilities: []string{"documents.read"}})
+	config := Config{PublicURL: origin, SetupCodePath: path, OwnerCapabilities: []string{"documents.read"}}
+	for _, apply := range configure {
+		apply(&config)
+	}
+	s, err := New(context.Background(), db, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +147,7 @@ func TestSetupLoginRotationLogoutAndRestart(t *testing.T) {
 			t.Fatal("forged session accepted")
 		}
 	}
-	restarted, err := New(context.Background(), db, Config{PublicURL: testOrigin, OwnerCapabilities: s.ownerCapabilities})
+	restarted, err := New(context.Background(), db, Config{PublicURL: testOrigin, OwnerCapabilities: s.config.OwnerCapabilities})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +296,7 @@ func TestValidationAndRateLimiting(t *testing.T) {
 	if _, err := db.Exec("UPDATE identity_login_attempts SET attempts=10 WHERE key=?", account[:]); err != nil {
 		t.Fatal(err)
 	}
-	restarted, err := New(context.Background(), db, Config{PublicURL: testOrigin, OwnerCapabilities: s.ownerCapabilities})
+	restarted, err := New(context.Background(), db, Config{PublicURL: testOrigin, OwnerCapabilities: s.config.OwnerCapabilities})
 	if err != nil {
 		t.Fatal(err)
 	}

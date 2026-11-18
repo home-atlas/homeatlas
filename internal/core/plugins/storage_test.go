@@ -61,7 +61,7 @@ func storageContext(user, home, member string) context.Context {
 func beginStorage(t *testing.T, s *Store, ctx context.Context, id string, readOnly bool) *storageAction {
 	t.Helper()
 	p := &Package{Manifest: Manifest{ID: id, Storage: "user"}}
-	a, err := s.begin(ctx, p, readOnly)
+	a, err := s.Begin(ctx, p, readOnly)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,13 +69,13 @@ func beginStorage(t *testing.T, s *Store, ctx context.Context, id string, readOn
 }
 func setStorage(t *testing.T, a *storageAction, ctx context.Context, key, value string) {
 	t.Helper()
-	if _, err := a.call(ctx, storageRequest{Op: "set", Key: key, Value: &value}); err != nil {
+	if _, err := a.Call(ctx, storageRequest{Op: "set", Key: key, Value: &value}); err != nil {
 		t.Fatal(err)
 	}
 }
 func getStorage(t *testing.T, a *storageAction, ctx context.Context, key string) storageResponse {
 	t.Helper()
-	r, err := a.call(ctx, storageRequest{Op: "get", Key: key})
+	r, err := a.Call(ctx, storageRequest{Op: "get", Key: key})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestStorageNamespacesRevocationMembershipsAndReadOnly(t *testing.T) {
 	ctx := storageContext("alice", "home-a", "alice-a")
 	a := beginStorage(t, s, ctx, "ext-test", false)
 	setStorage(t, a, ctx, "secret", "alice private")
-	if err := a.commit(ctx); err != nil {
+	if err := a.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -103,25 +103,25 @@ func TestStorageNamespacesRevocationMembershipsAndReadOnly(t *testing.T) {
 		t.Fatal(r)
 	}
 	value := "forbidden"
-	if _, err := reader.call(ctx, storageRequest{Op: "set", Key: "secret", Value: &value}); !errors.Is(err, ErrStorageDenied) {
+	if _, err := reader.Call(ctx, storageRequest{Op: "set", Key: "secret", Value: &value}); !errors.Is(err, ErrStorageDenied) {
 		t.Fatal("read-only view wrote")
 	}
 	writer := beginStorage(t, s, ctx, "ext-test", false)
 	setStorage(t, writer, ctx, "secret", "revoked")
-	if _, err := s.repository.db.Exec("DELETE FROM identity_permissions WHERE user_id='alice' AND household_id='home-a' AND capability='ext-test.write'"); err != nil {
+	if _, err := s.db.Exec("DELETE FROM identity_permissions WHERE user_id='alice' AND household_id='home-a' AND capability='ext-test.write'"); err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.commit(ctx); !errors.Is(err, ErrStorageDenied) {
+	if err := writer.Commit(ctx); !errors.Is(err, ErrStorageDenied) {
 		t.Fatal("write survived revocation", err)
 	}
 	reader = beginStorage(t, s, ctx, "ext-test", true)
 	if r := getStorage(t, reader, ctx, "secret"); *r.Value != "alice private" {
 		t.Fatal("revoked write changed data")
 	}
-	if _, err := s.repository.db.Exec("UPDATE identity_member_ids SET id='alice-rejoined' WHERE id='alice-a'"); err != nil {
+	if _, err := s.db.Exec("UPDATE identity_member_ids SET id='alice-rejoined' WHERE id='alice-a'"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.begin(ctx, &Package{Manifest: Manifest{ID: "ext-test", Storage: "user"}}, true); !errors.Is(err, ErrStorageDenied) {
+	if _, err := s.Begin(ctx, &Package{Manifest: Manifest{ID: "ext-test", Storage: "user"}}, true); !errors.Is(err, ErrStorageDenied) {
 		t.Fatal("retired membership read")
 	}
 	newCtx := storageContext("alice", "home-a", "alice-rejoined")
@@ -129,10 +129,10 @@ func TestStorageNamespacesRevocationMembershipsAndReadOnly(t *testing.T) {
 	if r := getStorage(t, reader, newCtx, "secret"); r.Found {
 		t.Fatal("reinvitation resurrected private data")
 	}
-	if _, err := s.repository.db.Exec("INSERT INTO household_module_states VALUES('home-a','ext-test',0)"); err != nil {
+	if _, err := s.db.Exec("INSERT INTO household_module_states VALUES('home-a','ext-test',0)"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.begin(newCtx, &Package{Manifest: Manifest{ID: "ext-test", Storage: "user"}}, true); !errors.Is(err, ErrStorageDenied) {
+	if _, err := s.Begin(newCtx, &Package{Manifest: Manifest{ID: "ext-test", Storage: "user"}}, true); !errors.Is(err, ErrStorageDenied) {
 		t.Fatal("inactive module read storage")
 	}
 }
@@ -144,48 +144,48 @@ func TestStorageOptimisticCommitPaginationAndBudgets(t *testing.T) {
 	second := beginStorage(t, s, ctx, "ext-test", false)
 	setStorage(t, first, ctx, "same", "first")
 	setStorage(t, second, ctx, "same", "second")
-	if err := first.commit(ctx); err != nil {
+	if err := first.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := second.commit(ctx); !errors.Is(err, ErrStorageConflict) {
+	if err := second.Commit(ctx); !errors.Is(err, ErrStorageConflict) {
 		t.Fatal("lost update allowed", err)
 	}
 	a := beginStorage(t, s, ctx, "ext-test", false)
 	for i := range 50 {
 		setStorage(t, a, ctx, fmt.Sprintf("key-%02d", i), "value")
 	}
-	if err := a.commit(ctx); err != nil {
+	if err := a.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
 	a = beginStorage(t, s, ctx, "ext-test", false)
-	if _, err := a.call(ctx, storageRequest{Op: "delete", Key: "key-01"}); err != nil {
+	if _, err := a.Call(ctx, storageRequest{Op: "delete", Key: "key-01"}); err != nil {
 		t.Fatal(err)
 	}
 	setStorage(t, a, ctx, "key-00a", "new")
-	r, err := a.call(ctx, storageRequest{Op: "list", Limit: 2})
+	r, err := a.Call(ctx, storageRequest{Op: "list", Limit: 2})
 	if err != nil || len(r.Keys) != 2 || r.Keys[0] != "key-00" || r.Keys[1] != "key-00a" || r.Next != "key-00a" {
 		t.Fatal(r, err)
 	}
-	r, err = a.call(ctx, storageRequest{Op: "list", After: r.Next, Limit: 2})
+	r, err = a.Call(ctx, storageRequest{Op: "list", After: r.Next, Limit: 2})
 	if err != nil || r.Keys[0] != "key-02" {
 		t.Fatal(r, err)
 	}
 	for _, req := range []storageRequest{{Op: "get", Key: "../escape"}, {Op: "get", Key: "x", Value: new(string)}, {Op: "set", Key: "x", Value: nil}, {Op: "list", Limit: 65}, {Op: "get", Key: "x", After: "x"}} {
-		if _, err := a.call(ctx, req); err == nil {
+		if _, err := a.Call(ctx, req); err == nil {
 			t.Fatal("invalid request accepted", req)
 		}
 	}
 	large := strings.Repeat("x", StorageValueBytes+1)
-	if _, err := a.call(ctx, storageRequest{Op: "set", Key: "large", Value: &large}); err == nil {
+	if _, err := a.Call(ctx, storageRequest{Op: "set", Key: "large", Value: &large}); err == nil {
 		t.Fatal("unbounded record")
 	}
 	a = beginStorage(t, s, ctx, "ext-test", true)
 	for range StorageCalls {
-		if _, err := a.call(ctx, storageRequest{Op: "get", Key: "same"}); err != nil {
+		if _, err := a.Call(ctx, storageRequest{Op: "get", Key: "same"}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := a.call(ctx, storageRequest{Op: "get", Key: "same"}); err == nil {
+	if _, err := a.Call(ctx, storageRequest{Op: "get", Key: "same"}); err == nil {
 		t.Fatal("unbounded host calls")
 	}
 }
@@ -275,16 +275,16 @@ func TestStorageWASIBridgeStagesAtomicallyAndUsesCurrentCaller(t *testing.T) {
 		}
 		cancel()
 		var count int
-		s.repository.db.QueryRow("SELECT count(*) FROM plugin_storage_records").Scan(&count)
+		s.db.QueryRow("SELECT count(*) FROM plugin_storage_records").Scan(&count)
 		if count != 0 {
 			t.Fatal("failed guest leaked mutation", ending)
 		}
 	}
 	p := storagePackage(t, []string{set}, "", false)
-	if err := validateGuest(ctx, p.wasm, true); err != nil {
+	if err := validateGuest(ctx, p.WASM, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateWasm(ctx, p.wasm); err == nil {
+	if err := validateWasm(ctx, p.WASM); err == nil {
 		t.Fatal("storage import accepted without manifest consent")
 	}
 	for _, scope := range []context.Context{ctx, storageContext("bob", "home-a", "bob-a"), storageContext("alice", "home-b", "alice-b")} {
@@ -293,13 +293,13 @@ func TestStorageWASIBridgeStagesAtomicallyAndUsesCurrentCaller(t *testing.T) {
 		}
 	}
 	var count int
-	if err := s.repository.db.QueryRow("SELECT count(*) FROM plugin_storage_records").Scan(&count); err != nil || count != 3 {
+	if err := s.db.QueryRow("SELECT count(*) FROM plugin_storage_records").Scan(&count); err != nil || count != 3 {
 		t.Fatal("cached guest used wrong caller scope", count, err)
 	}
 	if _, err := e.Run(ctx, storagePackage(t, []string{`{"op":"set","key":"bad","value":"x"}`, `{"op":"get","key":"../escape"}`}, "", false), "calculate", nil); err == nil {
 		t.Fatal("ignored host failure committed")
 	}
-	if err := s.repository.db.QueryRow("SELECT count(*) FROM plugin_storage_records WHERE key='bad'").Scan(&count); err != nil || count != 0 {
+	if err := s.db.QueryRow("SELECT count(*) FROM plugin_storage_records WHERE key='bad'").Scan(&count); err != nil || count != 0 {
 		t.Fatal("ignored failure leaked writes")
 	}
 	if _, err := e.Run(ctx, storagePackage(t, []string{set}, "", true), "calculate", nil); !errors.Is(err, ErrStorageDenied) {
@@ -310,21 +310,21 @@ func TestStorageWASIBridgeStagesAtomicallyAndUsesCurrentCaller(t *testing.T) {
 func TestStorageCommitRollsBackAllStatements(t *testing.T) {
 	s := storageFixture(t)
 	ctx := storageContext("alice", "home-a", "alice-a")
-	if _, err := s.repository.db.Exec(`CREATE TRIGGER fail_storage BEFORE INSERT ON plugin_storage_records WHEN new.key='fail' BEGIN SELECT RAISE(ABORT,'test failure'); END`); err != nil {
+	if _, err := s.db.Exec(`CREATE TRIGGER fail_storage BEFORE INSERT ON plugin_storage_records WHEN new.key='fail' BEGIN SELECT RAISE(ABORT,'test failure'); END`); err != nil {
 		t.Fatal(err)
 	}
 	a := beginStorage(t, s, ctx, "ext-test", false)
 	setStorage(t, a, ctx, "good", "value")
 	setStorage(t, a, ctx, "fail", "value")
-	if err := a.commit(ctx); err == nil {
+	if err := a.Commit(ctx); err == nil {
 		t.Fatal("failed transaction committed")
 	}
 	var count int
-	s.repository.db.QueryRow("SELECT count(*) FROM plugin_storage_records").Scan(&count)
+	s.db.QueryRow("SELECT count(*) FROM plugin_storage_records").Scan(&count)
 	if count != 0 {
 		t.Fatal("partial records committed")
 	}
-	s.repository.db.QueryRow("SELECT count(*) FROM plugin_storage_scopes").Scan(&count)
+	s.db.QueryRow("SELECT count(*) FROM plugin_storage_scopes").Scan(&count)
 	if count != 0 {
 		t.Fatal("partial namespace committed")
 	}

@@ -1,246 +1,67 @@
+// Package modules composes the module registry with HTTP and SQLite infrastructure.
 package modules
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
+	"database/sql"
 	"net/http"
-	"regexp"
-	"strings"
-	"sync"
 
-	"github.com/home-atlas/homeatlas/internal/core/access"
 	"github.com/home-atlas/homeatlas/internal/core/database"
+	httpadapter "github.com/home-atlas/homeatlas/internal/core/modules/adapters/http"
+	"github.com/home-atlas/homeatlas/internal/core/modules/adapters/sqlite"
+	"github.com/home-atlas/homeatlas/internal/core/modules/application"
+	"github.com/home-atlas/homeatlas/internal/core/modules/domain"
 )
 
-const ContractVersion = "1"
-
-type Navigation struct {
-	Label string `json:"label"`
-	Path  string `json:"path"`
-}
-
-type Manifest struct {
-	Collection      json.RawMessage `json:"collection,omitempty"`
-	ID              string          `json:"id"`
-	Name            string          `json:"name"`
-	Version         string          `json:"version"`
-	ContractVersion string          `json:"contractVersion"`
-	Runtime         string          `json:"runtime,omitempty"`
-	Capabilities    []string        `json:"capabilities"`
-	Dependencies    []string        `json:"dependencies"`
-	Navigation      Navigation      `json:"navigation"`
-}
-
-type Route struct {
-	Method     string
-	Path       string
-	Permission string
-	Handler    http.HandlerFunc
-}
-
-type SearchResult struct {
-	Module string `json:"module"`
-	ID     string `json:"id"`
-	Title  string `json:"title"`
-	Path   string `json:"path"`
-}
-
-// Module is a trusted host-side contract. External guests use the constrained WASI adapter.
 type Module interface {
-	Manifest() Manifest
+	application.Module
 	Migrations() []database.Migration
 	Routes() []Route
-	SearchPermission() string
-	Search(context.Context, string) ([]SearchResult, error)
 }
-
-type Status struct {
-	Manifest
-	Enabled          bool   `json:"enabled"`
-	Available        bool   `json:"available"`
-	AccessPermission string `json:"accessPermission"`
-}
-
-type entry struct {
-	module  Module
-	enabled bool
-}
-
 type Registry struct {
-	store   Repository
-	mu      sync.RWMutex
-	entries map[string]*entry
-	order   []string
+	*application.Registry
+	transport *httpadapter.Transport
+	db        *sql.DB
 }
 
-var identifier = regexp.MustCompile(`^[a-z][a-z0-9-]{0,47}$`)
-var method = regexp.MustCompile(`^[A-Z]+$`)
-var reserved = map[string]bool{"api": true, "assets": true, "core": true, "identity": true, "schema": true, "module": true, "plugin": true, "backups": true, "plugins": true, "plugin-files": true, "modules": true, "health": true, "search": true, "auth": true, "setup": true, "household": true, "invitations": true, "settings": true, "family": true, "join": true, "login": true, "recover": true, "verify-email": true, "activate-access": true, "forgot-password": true, "home": true}
-
-// ValidID shares the Core's namespace boundary with package installation.
-func ValidID(id string) bool { return identifier.MatchString(id) && !reserved[id] }
-
-func (r *Registry) Register(ctx context.Context, module Module) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	m := module.Manifest()
-	if !ValidID(m.ID) || m.Name == "" || m.Version == "" || m.ContractVersion != ContractVersion || m.Navigation.Path != "/"+m.ID {
-		return fmt.Errorf("invalid manifest: %q", m.ID)
-	}
-	if _, exists := r.entries[m.ID]; exists {
-		return fmt.Errorf("duplicate module: %s", m.ID)
-	}
-	for _, dependency := range m.Dependencies {
-		if _, exists := r.entries[dependency]; !exists {
-			return fmt.Errorf("%s: register dependency %s first", m.ID, dependency)
-		}
-	}
-	declared := func(permission string) bool {
-		for _, capability := range m.Capabilities {
-			if capability == permission && strings.HasPrefix(capability, m.ID+".") {
-				return true
-			}
-		}
-		return false
-	}
-	if !declared(module.SearchPermission()) {
-		return fmt.Errorf("%s: undeclared search capability", m.ID)
-	}
-	seen := make(map[string]bool)
-	for _, route := range module.Routes() {
-		key := route.Method + " " + route.Path
-		if !declared(route.Permission) || route.Handler == nil || !method.MatchString(route.Method) || !strings.HasPrefix(route.Path, "/") || strings.ContainsAny(route.Path, " ?#\t\n\r") || seen[key] {
-			return fmt.Errorf("%s: invalid route %q", m.ID, key)
-		}
-		seen[key] = true
-	}
-	enabled, err := r.store.register(ctx, m.ID, module.Migrations())
-	if err != nil {
-		return err
-	}
-	for _, dependency := range m.Dependencies {
-		if enabled && !r.entries[dependency].enabled {
-			return fmt.Errorf("%s: dependency %s is disabled", m.ID, dependency)
-		}
-	}
-	r.entries[m.ID] = &entry{module: module, enabled: enabled}
-	r.order = append(r.order, m.ID)
-	return nil
-}
-
-// SetEnabled is for trusted application code; it is deliberately not an unauthenticated API.
-func (r *Registry) SetEnabled(ctx context.Context, id string, enabled bool) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	e, ok := r.entries[id]
-	if !ok {
-		return fmt.Errorf("unknown module: %s", id)
-	}
-	for otherID, other := range r.entries {
-		for _, dependency := range other.module.Manifest().Dependencies {
-			if enabled && otherID == id && !r.entries[dependency].enabled {
-				return fmt.Errorf("dependency disabled: %s", dependency)
-			}
-			if !enabled && other.enabled && dependency == id {
-				return fmt.Errorf("%s is required by %s", id, otherID)
-			}
-		}
-	}
-	if err := r.store.setEnabled(ctx, id, enabled); err != nil {
-		return err
-	}
-	e.enabled = enabled
-	return nil
-}
-
-func (r *Registry) List() []Status {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	result := make([]Status, 0, len(r.order))
-	for _, id := range r.order {
-		e := r.entries[id]
-		result = append(result, Status{Manifest: e.module.Manifest(), Enabled: e.enabled, Available: e.enabled, AccessPermission: e.module.SearchPermission()})
-	}
-	return result
-}
-
-func (r *Registry) Mount(mux *http.ServeMux) {
-	for _, id := range r.order {
-		e := r.entries[id]
-		for _, route := range e.module.Routes() {
-			path := "/api/" + id + strings.TrimSuffix(route.Path, "/")
-			mux.HandleFunc(route.Method+" "+path, func(w http.ResponseWriter, req *http.Request) {
-				r.mu.RLock()
-				defer r.mu.RUnlock()
-				if !e.enabled {
-					http.NotFound(w, req)
-					return
-				}
-				p, ok := access.Current(req.Context())
-				if !ok {
-					Authorize(w, req, route.Permission)
-					return
-				}
-				states, err := r.effective(req.Context(), nil, p.HouseholdID)
-				if err != nil {
-					JSON(w, 503, map[string]string{"error": "modules_unavailable"})
-					return
-				}
-				if !moduleEnabled(states, id) {
-					http.NotFound(w, req)
-					return
-				}
-				if !Authorize(w, req, route.Permission) {
-					return
-				}
-				route.Handler(w, req)
-			})
-		}
-	}
-}
-
-func (r *Registry) Search(ctx context.Context, query string) ([]SearchResult, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	result := []SearchResult{}
-	p, ok := access.Current(ctx)
-	if !ok {
-		return result, nil
-	}
-	states, err := r.effective(ctx, nil, p.HouseholdID)
-	if err != nil {
+func New(ctx context.Context, db *sql.DB) (*Registry, error) {
+	if err := sqlite.Migrate(ctx, db); err != nil {
 		return nil, err
 	}
-	for _, id := range r.order {
-		e := r.entries[id]
-		if !moduleEnabled(states, id) || !access.Allows(ctx, e.module.SearchPermission()) {
-			continue
+	registry := application.New(sqlite.New(db))
+	return &Registry{Registry: registry, transport: httpadapter.New(registry), db: db}, nil
+}
+func (r *Registry) Register(ctx context.Context, module Module) error {
+	err := r.Registry.Register(ctx, module, func(ctx context.Context) error {
+		m := module.Manifest()
+		if err := httpadapter.ValidateRoutes(m.ID, m.Capabilities, module.Routes()); err != nil {
+			return err
 		}
-		matches, err := e.module.Search(ctx, query)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, matches...)
+		return database.Apply(ctx, r.db, m.ID, module.Migrations())
+	})
+	if err == nil {
+		r.transport.Register(module.Manifest().ID, module.Routes())
 	}
-	return result, nil
+	return err
 }
+func (r *Registry) Mount(mux *http.ServeMux) { r.transport.Mount(mux) }
+func ValidID(id string) bool                 { return domain.ValidID(id) }
+func Authorize(w http.ResponseWriter, r *http.Request, permission string) bool {
+	return httpadapter.Authorize(w, r, permission)
+}
+func JSON(w http.ResponseWriter, status int, value any) { httpadapter.JSON(w, status, value) }
 
-func Authorize(w http.ResponseWriter, req *http.Request, permission string) bool {
-	if _, ok := access.Current(req.Context()); !ok {
-		JSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication_required"})
-		return false
-	}
-	if !access.Allows(req.Context(), permission) {
-		JSON(w, http.StatusForbidden, map[string]string{"error": "permission_denied"})
-		return false
-	}
-	return true
-}
+type Manifest = domain.Manifest
+type Navigation = domain.Navigation
+type SearchResult = domain.SearchResult
+type Status = domain.Status
+type Route = httpadapter.Route
 
-func JSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
-}
+const ContractVersion = domain.ContractVersion
+
+var (
+	ErrUnknownModule     = domain.ErrUnknownModule
+	ErrUnavailable       = domain.ErrUnavailable
+	ErrDependency        = domain.ErrDependency
+	ErrHouseholdRequired = domain.ErrHouseholdRequired
+)

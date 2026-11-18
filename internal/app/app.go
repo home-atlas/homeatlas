@@ -124,7 +124,7 @@ func newWithPlugins(ctx context.Context, db *sql.DB, assets fs.FS, publicURL, da
 		return nil, err
 	}
 	if options.StorageHTTPClient != nil {
-		storage.HTTPClient = options.StorageHTTPClient
+		storage.SetHTTPClient(options.StorageHTTPClient)
 	}
 	collectionHosts := map[string]*collections.Module{}
 	for _, p := range activePackages {
@@ -132,7 +132,7 @@ func newWithPlugins(ctx context.Context, db *sql.DB, assets fs.FS, publicURL, da
 			continue
 		}
 		config := plugins.CollectionConfig(p, engine)
-		config.Storage = storage
+		config.Storage = collections.RemoteStorage(storage)
 		host, err := collections.New(db, plugins.CollectionDirectory(dataDir, p), accounts, config)
 		if err != nil {
 			return nil, err
@@ -187,7 +187,7 @@ func newWithPlugins(ctx context.Context, db *sql.DB, assets fs.FS, publicURL, da
 	for _, p := range packages {
 		if p.Manifest.Collection != nil {
 			config := plugins.CollectionConfig(p, engine)
-			config.Storage = storage
+			config.Storage = collections.RemoteStorage(storage)
 			storageCollections = append(storageCollections, collections.StorageCollection(config, plugins.CollectionDirectory(dataDir, p)))
 			provider := collections.NewBackup(filepath.Dir(plugins.CollectionDirectory(dataDir, p)), accounts, config)
 			participant := backup.Participant{Provider: plugins.CollectionBackup{Provider: provider, Package: p}}

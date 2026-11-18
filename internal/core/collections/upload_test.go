@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/home-atlas/homeatlas/internal/core/access"
+	"github.com/home-atlas/homeatlas/internal/core/collections/adapters/sqlite"
 	"github.com/home-atlas/homeatlas/internal/core/database"
 	"github.com/home-atlas/homeatlas/internal/core/modules"
 	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
@@ -82,7 +83,7 @@ func TestUploadUseCaseWithoutHTTPPreservesAuthorizationAndCleanup(t *testing.T) 
 					t.Fatal("original not preserved", err)
 				}
 				var owner, home string
-				if err := module.repository.(*sqliteRepository).db.QueryRowContext(ctx, "SELECT owner_id,household_id FROM collection_items WHERE id=?", item.ID).Scan(&owner, &home); err != nil || owner != "owner" || home != "home" {
+				if err := db.QueryRowContext(ctx, sqlite.Query(config, "SELECT owner_id,household_id FROM collection_items WHERE id=?"), item.ID).Scan(&owner, &home); err != nil || owner != "owner" || home != "home" {
 					t.Fatal("scope lost", err)
 				}
 				return
@@ -100,12 +101,19 @@ func TestUploadUseCaseWithoutHTTPPreservesAuthorizationAndCleanup(t *testing.T) 
 				t.Fatal("failed upload left an original", err)
 			}
 			var count int
-			if err := module.repository.(*sqliteRepository).db.QueryRowContext(ctx, "SELECT count(*) FROM collection_items").Scan(&count); err != nil || count != 0 {
+			if err := db.QueryRowContext(ctx, sqlite.Query(config, "SELECT count(*) FROM collection_items")).Scan(&count); err != nil || count != 0 {
 				t.Fatal("failed upload published metadata", err)
 			}
-			if len(module.uploads) != 0 {
-				t.Fatal("upload admission leaked")
+			first, err := module.BeginUpload(ctx)
+			if err != nil {
+				t.Fatal("upload admission leaked", err)
 			}
+			defer first.Close()
+			second, err := module.BeginUpload(ctx)
+			if err != nil {
+				t.Fatal("upload admission leaked", err)
+			}
+			defer second.Close()
 		})
 	}
 }

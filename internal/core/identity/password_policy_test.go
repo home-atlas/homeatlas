@@ -78,11 +78,11 @@ func TestEightCharacterPasswordsAcrossAccountFlows(t *testing.T) {
 		if w.Code != 201 {
 			t.Fatal(w.Code, w.Body.String())
 		}
-		var invitation struct{ URL string }
-		if err := json.Unmarshal(w.Body.Bytes(), &invitation); err != nil {
+		var Invitation struct{ URL string }
+		if err := json.Unmarshal(w.Body.Bytes(), &Invitation); err != nil {
 			t.Fatal(err)
 		}
-		body := map[string]string{"token": strings.Split(invitation.URL, "#")[1], "name": "Member", "password": "pass123"}
+		body := map[string]string{"token": strings.Split(Invitation.URL, "#")[1], "name": "Member", "password": "pass123"}
 		if w := send(h, testOrigin, "POST", "/api/invitations/accept", body, nil); w.Code != 400 {
 			t.Fatal("seven-character invitation accepted", w.Code)
 		}

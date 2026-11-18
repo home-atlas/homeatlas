@@ -20,16 +20,16 @@ func TestPersistentBackupFiltersMembershipsAndRestoresOnlyIncludedNamespace(t *t
 	}{{ctx, "ext-test", "original"}, {storageContext("alice", "home-b", "alice-b"), "ext-test", "other home"}, {ctx, "ext-other", "other plugin"}, {storageContext("bob", "home-a", "bob-a"), "ext-test", "retired"}} {
 		a := beginStorage(t, s, tc.ctx, tc.id, false)
 		setStorage(t, a, tc.ctx, "same", tc.value)
-		if err := a.commit(tc.ctx); err != nil {
+		if err := a.Commit(tc.ctx); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.repository.db.Exec("DELETE FROM identity_memberships WHERE user_id='bob'"); err != nil {
+	if _, err := s.db.Exec("DELETE FROM identity_memberships WHERE user_id='bob'"); err != nil {
 		t.Fatal(err)
 	}
 	p := testPackage(t, true)
 	p.Manifest.Storage = "user"
-	provider := Backup{p}
+	provider := Backup{Package: p}
 	snapshot, err := database.Open(filepath.Join(t.TempDir(), "snapshot.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +47,7 @@ func TestPersistentBackupFiltersMembershipsAndRestoresOnlyIncludedNamespace(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := provider.Export(ctx, s.repository.db, tx, "home-a", false); err != nil {
+	if err := provider.Export(ctx, s.db, tx, "home-a", false); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -59,14 +59,14 @@ func TestPersistentBackupFiltersMembershipsAndRestoresOnlyIncludedNamespace(t *t
 	}
 	a := beginStorage(t, s, ctx, "ext-test", false)
 	setStorage(t, a, ctx, "same", "later")
-	if err := a.commit(ctx); err != nil {
+	if err := a.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
 	plan, err := provider.Prepare(ctx, snapshot, "", "home-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	live, err := s.repository.db.Begin()
+	live, err := s.db.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,11 +90,11 @@ func TestPersistentBackupFiltersMembershipsAndRestoresOnlyIncludedNamespace(t *t
 	}
 	// Archive data is untrusted even though the schema and package are pinned.
 	for _, statement := range []string{
-		"UPDATE " + provider.recordsTable() + " SET user_id='bob'",
-		"UPDATE " + provider.recordsTable() + " SET key='../escape'",
-		"UPDATE " + provider.recordsTable() + " SET value=?",
+		"UPDATE " + "plugin_ext_test_records" + " SET user_id='bob'",
+		"UPDATE " + "plugin_ext_test_records" + " SET key='../escape'",
+		"UPDATE " + "plugin_ext_test_records" + " SET value=?",
 	} {
-		if _, err := snapshot.Exec("UPDATE " + provider.recordsTable() + " SET user_id='alice',key='same',value='original'"); err != nil {
+		if _, err := snapshot.Exec("UPDATE " + "plugin_ext_test_records" + " SET user_id='alice',key='same',value='original'"); err != nil {
 			t.Fatal(err)
 		}
 		var err error

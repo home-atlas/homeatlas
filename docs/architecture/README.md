@@ -15,29 +15,43 @@ HomeAtlas is a modular monolith: one Go process, an embedded Vue client and SQLi
 | `sdk/pluginstorage` | Experimental guest-side ABI, without host internals |
 | `apps/web` | Session client, shared components and declarative module renderers |
 
-## Application operations and adapters
+## Domain, application and adapters
 
-The upload path separates multipart/HTTP handling in `collections/files.go`, application orchestration in `collections/upload.go` and transactional SQLite publication in `collections/upload_sql.go`. `Module.Upload(context, UploadInput)` accepts a filename, metadata bytes and an `io.Reader`, and returns an item or a domain error. It streams once into private staging, validates, flushes, prepares optional remote storage and commits metadata plus object location together. Failure removes local staging and aborts unpublished remote objects.
+Identity, collections, module registry, original storage and plugin execution/storage have separate Go packages:
+
+```text
+internal/core/<feature>/
+  domain/                records, validation and policy
+  application/           use cases and the ports they consume
+  adapters/http/         routes, decoding, cookies and HTTP responses
+  adapters/sqlite/       queries, scans, migrations and snapshot codecs
+```
+
+Only relevant adapters exist for each feature. Collections also has filesystem and remote-original adapters; object storage has S3 and local credential-encryption adapters; plugins have package-installation and WASI adapters. Shared `access`, `fault` and `unitofwork` contracts remain small, transport-independent packages. Backup streaming/cache advice lives in `backup/stream` so application code does not import the SQLite snapshot contract.
 
 ```mermaid
 flowchart LR
-  HTTP[HTTP multipart adapter] --> Case[Upload application operation]
-  Trusted[Trusted in-process caller] --> Case
-  Case --> Validation[Configured metadata and content validation]
-  Case --> Originals[Private local or S3 originals]
-  Case --> SQL[SQLite publication adapter]
-  SQL --> DB[(SQLite transaction)]
+  HTTP[HTTP adapter] --> App[Application use cases and ports]
+  App --> Domain[Domain records and policy]
+  SQL[SQLite adapter] --> App
+  SQL --> Domain
+  Host[Host composition] --> HTTP
+  Host --> SQL
 ```
 
-In-process callers supply authenticated principal context and must run through the application backup coordination gate. Identity, permissions, current membership and module activation are rechecked before upload publication. This method is an internal host API, not a way for WASI guests or external callers to supply identity. HTTP supports metadata before or after the file without a second full copy.
+Source dependencies point toward application/domain. These packages have no direct or transitive dependency on `database/sql`, `net/http`, AWS, wazero or implementation adapters. `TestLayerDependencies` checks the compiled Go dependency graph; `TestPersistenceBoundaries` restricts direct SQL to adapters and the existing host snapshot infrastructure.
 
-Identity now has an `Application` with typed input/result records and classified failures. `identity/http.go` owns decoding, cookies, CSRF, routes and HTTP status mapping; repositories in `*_sql.go` own queries, scans and migrations. Login, recovery, invitations, membership changes, assisted enrollment, PIN devices, email verification and household settings reuse the application operations without HTTP. The local recovery CLI uses the same repository. `Application.Authenticate(context, token)` creates the session/principal context for either transport and clears any previous identity on failure.
+The feature root packages are assembly facades for trusted host callers. They construct adapters and retain the existing host entry points/types; application packages never import these facades. `internal/app` composes the complete process and owns the global request/backup coordination boundary. Database initialization, SMTP delivery and the trusted SQL snapshot contract are infrastructure, rather than artificially empty domain/use-case packages.
 
-Collection list/search/detail/update/sharing operations use typed repository methods. Metadata validation stays in the application, including direct update calls. Membership, read/write/share permissions, ownership and module activation are rechecked inside the committing transaction. Registry state, Local/S3 settings and moves, scheduled backup history and private/shared plugin storage follow the same policy/persistence boundary. SQL belongs in explicit `*_sql.go` adapters; the composition root supplies SQLite connections.
+`identity/application` owns account lifecycle, authentication and household administration. Its persistence ports are grouped by account installation, authentication, alternative access, invitations, memberships, recovery and settings. `identity/adapters/http` owns cookies, CSRF, JSON and status mapping. `Application.Authenticate(context, token)` supplies the same authenticated context to HTTP and trusted in-process callers and clears a previous identity on failure.
 
-`access.Directory` and authorization callbacks accept `unitofwork.Transaction` (commit/rollback only), without `database/sql`. The same native transaction reaches all SQL adapters, so a failed identity, grant, original-location or module write cannot publish a partial change. Rate counters retain their existing separately committed transaction. `unitofwork.ErrNotFound` is independent of the driver; adapters retain SQL error compatibility for existing backup integrations.
+`collections/application` owns list/search/detail/update/sharing and streaming upload operations. Filesystem, content inspection and remote publication use injected ports. The HTTP adapter preserves multipart metadata before/after the original without a second full copy. SQL FTS escaping belongs to the SQLite adapter. Internal original keys and membership bindings remain excluded from public JSON after moving records to the domain package.
 
-Backup snapshot codecs and the trusted `backup.Provider` contract intentionally remain SQLite-specific. Snapshot serialization, migrations and composition are infrastructure boundaries, not portable application ports. Backup coordination remains in `internal/app`; trusted direct callers must use its gate. No claim of interchangeable database engines or multi-process coordination is made. `internal/architecture` checks that application/HTTP code cannot reintroduce direct SQL calls and that identity application code cannot import HTTP.
+`unitofwork.Transaction` exposes only commit/rollback. Identity, registry and collection/storage repositories still share the same committing scope for current membership/permission checks and data/grant/original-location writes. Authorization is rechecked inside that scope. Rate counters preserve their separate durable commits. Trusted in-process callers must still pass through the global backup coordination gate.
+
+Plugin application code stages private/shared storage calls, checks current permissions/revisions and commits after successful execution. The WASI adapter owns imports, linear memory, runtime cache and deadlines. The application keeps the execution context alive through output validation and storage commit. Guest import `homeatlas_storage_v1`, wire fields, limits, consent receipts and contract version remain unchanged; existing `.hap` packages and `sdk/pluginstorage` need no migration.
+
+Backup snapshot codecs and `backup.Provider` intentionally remain SQLite-specific infrastructure. Their schemas/versions and migration SQL bytes are unchanged. The host coordinator in `internal/app` retains its one-process consistency gate; this refactor does not introduce interchangeable database engines or multi-process coordination.
 
 ## Security boundaries
 

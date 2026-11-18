@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/home-atlas/homeatlas/internal/core/collections/adapters/sqlite"
 )
 
 func testConfig(id string) Config {
@@ -15,7 +17,7 @@ func TestCollectionNamespaceAndDeclaredDefault(t *testing.T) {
 		t.Fatal("valid configuration rejected")
 	}
 	query := "CREATE TABLE collection_items(category TEXT DEFAULT '__collection_default__'); SELECT item_id FROM collection_grants; SELECT item_id FROM collection_snapshot_grants"
-	x, y := a.sql(query), b.sql(query)
+	x, y := sqlite.Query(a, query), sqlite.Query(b, query)
 	if x == y || !strings.Contains(x, "plugin_collection_ext_pets_shares") || !strings.Contains(y, "plugin_collection_ext_pet_shares") || !strings.Contains(x, "DEFAULT 'shares'") {
 		t.Fatal(x, y)
 	}

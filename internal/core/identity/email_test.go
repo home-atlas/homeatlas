@@ -168,7 +168,7 @@ func TestVerificationReissueExpiryAndBindingToAddress(t *testing.T) {
 func TestEmailRecoveryOnlyForVerifiedAccountsWithoutEnumerating(t *testing.T) {
 	s, h, m, cookie := mailService(t)
 	for _, email := range []string{"unknown@example.test", "alice@example.test"} {
-		if err := s.sendRecoveryEmail(context.Background(), email); err != nil {
+		if err := s.SendRecoveryEmail(context.Background(), email); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -291,7 +291,7 @@ func TestEmailRecoveryRejectsExpiryAndLostMailboxProof(t *testing.T) {
 	verifyMailbox(t, h, m, cookie)
 	issue := func() string {
 		t.Helper()
-		if err := s.sendRecoveryEmail(context.Background(), "alice@example.test"); err != nil {
+		if err := s.SendRecoveryEmail(context.Background(), "alice@example.test"); err != nil {
 			t.Fatal(err)
 		}
 		return mailCode(t, m.next(t), "/forgot-password")

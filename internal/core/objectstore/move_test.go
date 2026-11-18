@@ -16,7 +16,7 @@ func seedOriginal(t *testing.T, s *Store, house, id string) (Collection, string)
 	t.Helper()
 	dir := filepath.Join(s.dir, "documents")
 	os.MkdirAll(dir, 0700)
-	_, err := s.repository.db.Exec(`CREATE TABLE IF NOT EXISTS documents(id TEXT PRIMARY KEY,household_id TEXT NOT NULL,file_key TEXT NOT NULL,size_bytes INTEGER NOT NULL,sha256 TEXT NOT NULL)`)
+	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS documents(id TEXT PRIMARY KEY,household_id TEXT NOT NULL,file_key TEXT NOT NULL,size_bytes INTEGER NOT NULL,sha256 TEXT NOT NULL)`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func seedOriginal(t *testing.T, s *Store, house, id string) (Collection, string)
 	if err = os.WriteFile(filepath.Join(dir, key), []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.repository.db.Exec("INSERT INTO documents VALUES(?,?,?,?,?)", id, house, key, len(data), fmt.Sprintf("%x", sha256.Sum256([]byte(data)))); err != nil {
+	if _, err = s.db.Exec("INSERT INTO documents VALUES(?,?,?,?,?)", id, house, key, len(data), fmt.Sprintf("%x", sha256.Sum256([]byte(data)))); err != nil {
 		t.Fatal(err)
 	}
 	return Collection{ID: "documents", Table: "documents", Directory: dir}, data
@@ -53,7 +53,7 @@ func TestMoveRoundTripResumeAndScope(t *testing.T) {
 		t.Fatal("foreign original touched", err)
 	}
 	var key string
-	s.repository.db.QueryRow("SELECT file_key FROM documents WHERE id='first'").Scan(&key)
+	s.db.QueryRow("SELECT file_key FROM documents WHERE id='first'").Scan(&key)
 	f, cleanup, err := s.Open(ctx, c.ID, key)
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestMoveRoundTripResumeAndScope(t *testing.T) {
 	if err != nil || !result.Moved || result.Local != 1 || result.Remote != 0 || server.Count() != 0 {
 		t.Fatal("reverse move", result, err)
 	}
-	s.repository.db.QueryRow("SELECT file_key FROM documents WHERE id='first'").Scan(&key)
+	s.db.QueryRow("SELECT file_key FROM documents WHERE id='first'").Scan(&key)
 	raw, err = os.ReadFile(filepath.Join(c.Directory, key))
 	if err != nil || string(raw) != data {
 		t.Fatal("local destination", err, string(raw))
@@ -113,7 +113,7 @@ func TestMoveFailureAndRevocationKeepSource(t *testing.T) {
 		t.Fatal("revocation rollback", err, checks, server.Count())
 	}
 	var key string
-	s.repository.db.QueryRow("SELECT file_key FROM documents WHERE id='first'").Scan(&key)
+	s.db.QueryRow("SELECT file_key FROM documents WHERE id='first'").Scan(&key)
 	if key != "key-first" {
 		t.Fatal("revoked move published")
 	}
@@ -143,7 +143,7 @@ func TestMoveVerifiesDestinationAndRetriesCleanupAfterRestart(t *testing.T) {
 	}
 	server.CorruptPut(false)
 	var key string
-	s.repository.db.QueryRow("SELECT file_key FROM documents WHERE id='first'").Scan(&key)
+	s.db.QueryRow("SELECT file_key FROM documents WHERE id='first'").Scan(&key)
 	if key != "key-first" || server.Count() != 0 {
 		t.Fatal("corrupt copy lost source")
 	}
@@ -162,15 +162,15 @@ func TestMoveVerifiesDestinationAndRetriesCleanupAfterRestart(t *testing.T) {
 	if err != nil || !result.Moved || result.PendingCleanup != 1 || result.Local != 1 || result.Remote != 0 || server.Count() != 1 {
 		t.Fatal("cleanup tracking", result, err)
 	}
-	s.repository.db.QueryRow("SELECT file_key FROM documents WHERE id='first'").Scan(&key)
+	s.db.QueryRow("SELECT file_key FROM documents WHERE id='first'").Scan(&key)
 	if _, err = os.Stat(filepath.Join(c.Directory, key)); err != nil {
 		t.Fatal("confirmed copy missing", err)
 	}
-	restarted, err := New(ctx, s.repository.db, s.dir)
+	restarted, err := New(ctx, s.db, s.dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	restarted.HTTPClient = server.Client()
+	restarted.SetHTTPClient(server.Client())
 	server.DenyDelete(false)
 	result, err = restarted.MoveNext(ctx, "home", settings.Revision, []Collection{c}, allow)
 	if err != nil || result.Moved || result.PendingCleanup != 0 || server.Count() != 0 {

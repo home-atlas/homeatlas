@@ -1,0 +1,98 @@
+package application
+
+import (
+	"context"
+
+	"github.com/home-atlas/homeatlas/internal/core/access"
+	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
+)
+
+// The installation state is an upper bound; household preferences never enable a globally blocked module.
+func (r *Registry) effective(ctx context.Context, tx unitofwork.Transaction, household string) ([]Status, error) {
+	overrides, err := r.store.Overrides(ctx, tx, household)
+	if err != nil {
+		return nil, err
+	}
+	states := make([]Status, 0, len(r.order))
+	enabled := map[string]bool{}
+	// Registration is topological: dependencies always precede their consumers.
+	for _, id := range r.order {
+		e := r.entries[id]
+		active := e.enabled
+		if override, exists := overrides[id]; exists {
+			active = active && override
+		}
+		for _, dependency := range e.module.Manifest().Dependencies {
+			active = active && enabled[dependency]
+		}
+		enabled[id] = active
+		states = append(states, Status{Manifest: e.module.Manifest(), Enabled: active, Available: e.enabled, AccessPermission: e.module.SearchPermission()})
+	}
+	return states, nil
+}
+
+func moduleEnabled(states []Status, id string) bool {
+	for _, s := range states {
+		if s.ID == id {
+			return s.Enabled
+		}
+	}
+	return false
+}
+
+func (r *Registry) ListFor(ctx context.Context, household string) ([]Status, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.effective(ctx, nil, household)
+}
+
+// Authorize under the same transaction as the state change. Keep the lock→DB order used by routes/search.
+func (r *Registry) SetHouseholdEnabled(ctx context.Context, id string, enabled bool, authorize func(unitofwork.Transaction) error) error {
+	p, ok := access.Current(ctx)
+	if !ok || authorize == nil {
+		return ErrHouseholdRequired
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	tx, err := r.store.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := authorize(tx); err != nil {
+		return err
+	}
+	e, exists := r.entries[id]
+	if !exists {
+		return ErrUnknownModule
+	}
+	if !e.enabled {
+		return ErrUnavailable
+	}
+	states, err := r.effective(ctx, tx, p.HouseholdID)
+	if err != nil {
+		return err
+	}
+	if enabled {
+		for _, dep := range e.module.Manifest().Dependencies {
+			if !moduleEnabled(states, dep) {
+				return ErrDependency
+			}
+		}
+	} else {
+		for _, other := range states {
+			if !other.Enabled {
+				continue
+			}
+			for _, dep := range other.Dependencies {
+				if dep == id {
+					return ErrDependency
+				}
+			}
+		}
+	}
+	if err := r.store.SetHouseholdEnabled(ctx, tx, p.HouseholdID, id, enabled); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
