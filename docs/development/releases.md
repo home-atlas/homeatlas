@@ -8,4 +8,6 @@ Change `VERSION` deliberately in a PR. Before 1.0, minor increments may include 
 
 The pipeline publishes its already-built Linux amd64 executable, separately built Documents package and checksums; license notices accompany the release. Critical validation gates publication. It does not rerun the exhaustive suite automatically.
 
+Concurrency groups include the event and PR number (or branch ref). A delayed PR check cannot cancel a main publication even if its ref resolves to main after the PR is merged. New commits to the same PR can still cancel its older validation; main publications and lab deployment remain serialized without cancelling an active release.
+
 `LAB_DEPLOY_ENABLED=true` at repository level opts into Tailscale deployment after successful publication. Missing/false skips deployment, including in forks. Product tags contain no lab name, address or infrastructure identifier. Existing `-lab.*` tags remain historical releases and valid rollback references.
