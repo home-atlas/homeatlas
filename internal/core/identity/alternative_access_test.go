@@ -11,9 +11,10 @@ import (
 
 func assistedFixture(t *testing.T) (*Service, http.Handler, *http.Cookie) {
 	t.Helper()
-	s, h, _ := newService(t, testOrigin)
-	s.ownerCapabilities = []string{Manage, "documents.read", "documents.write", "documents.share"}
-	s.capabilities = []string{"documents.read", "documents.write", "documents.share"}
+	s, h, _ := newService(t, testOrigin, func(c *Config) {
+		c.OwnerCapabilities = []string{Manage, "documents.read", "documents.write", "documents.share"}
+		c.DelegableCapabilities = []string{"documents.read", "documents.write", "documents.share"}
+	})
 	return s, h, bootstrap(t, h, testOrigin)
 }
 func newAssisted(t *testing.T, h http.Handler, owner *http.Cookie, username string) (string, string) {
@@ -143,7 +144,7 @@ func TestPINLockPersistsAndEnrollmentRevokesOldDevice(t *testing.T) {
 	for range 5 {
 		send(h, testOrigin, "POST", "/api/auth/pin/login", map[string]string{"pin": "111111"}, device)
 	}
-	restarted, err := New(context.Background(), identityDB(s), Config{PublicURL: testOrigin, OwnerCapabilities: s.ownerCapabilities, DelegableCapabilities: s.capabilities})
+	restarted, err := New(context.Background(), identityDB(s), Config{PublicURL: testOrigin, OwnerCapabilities: s.config.OwnerCapabilities, DelegableCapabilities: s.config.DelegableCapabilities})
 	if err != nil {
 		t.Fatal(err)
 	}

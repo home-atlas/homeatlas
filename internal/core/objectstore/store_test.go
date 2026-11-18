@@ -32,7 +32,7 @@ func fixture(t *testing.T) (*Store, *s3test.Server) {
 		t.Fatal(err)
 	}
 	server := s3test.New(t)
-	s.HTTPClient = server.Client()
+	s.SetHTTPClient(server.Client())
 	return s, server
 }
 func config(server *s3test.Server) Settings {
@@ -62,7 +62,7 @@ func TestLocationsSurviveSwitchesRestartAndCorruption(t *testing.T) {
 		t.Fatal("credentials exposed", string(raw))
 	}
 	var sealed []byte
-	if err = s.repository.db.QueryRow("SELECT sealed FROM file_storage_profiles").Scan(&sealed); err != nil || bytes.Contains(sealed, []byte("fixture-secret")) {
+	if err = s.db.QueryRow("SELECT sealed FROM file_storage_profiles").Scan(&sealed); err != nil || bytes.Contains(sealed, []byte("fixture-secret")) {
 		t.Fatal("credentials plaintext", err)
 	}
 	file, err := os.CreateTemp(s.dir, "input")
@@ -77,7 +77,7 @@ func TestLocationsSurviveSwitchesRestartAndCorruption(t *testing.T) {
 	if err != nil || pending == nil {
 		t.Fatal(err)
 	}
-	tx, _ := s.repository.db.BeginTx(ctx, nil)
+	tx, _ := s.db.BeginTx(ctx, nil)
 	if err = pending.Publish(ctx, tx); err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestLocationsSurviveSwitchesRestartAndCorruption(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Backup export holds the only live DB connection; lookups must use that transaction.
-	tx, _ = s.repository.db.BeginTx(ctx, nil)
+	tx, _ = s.db.BeginTx(ctx, nil)
 	f, cleanup, err := s.OpenFrom(ctx, tx, "documents", "original")
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ func TestLocationsSurviveSwitchesRestartAndCorruption(t *testing.T) {
 	if err = s.Save(ctx, "home", settings, allow); err != nil {
 		t.Fatal("rotate credentials", err)
 	}
-	_, oldProfile, err := s.profile(ctx, pending.profile)
+	_, oldProfile, err := testProfile(s, ctx, pending.Profile)
 	if err != nil || oldProfile.SecretKey != "fixture-secret-rotated" {
 		t.Fatal("old original credentials not rotated", err)
 	}
@@ -127,11 +127,11 @@ func TestLocationsSurviveSwitchesRestartAndCorruption(t *testing.T) {
 	if err = s.Save(ctx, "home", Settings{Provider: "local", Revision: settings.Revision}, allow); err != nil {
 		t.Fatal(err)
 	}
-	restarted, err := New(ctx, s.repository.db, s.dir)
+	restarted, err := New(ctx, s.db, s.dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	restarted.HTTPClient = server.Client()
+	restarted.SetHTTPClient(server.Client())
 	f, cleanup, err = restarted.Open(ctx, "documents", "original")
 	if err != nil {
 		t.Fatal(err)
@@ -187,11 +187,11 @@ func TestSettingsFailuresConflictPermissionAndKeyBinding(t *testing.T) {
 		t.Fatal("reused credentials at changed destination", err)
 	}
 	// Swapping ciphertext between profile identities must fail authentication.
-	_, id, _ := s.current(ctx, "home")
+	_, id, _ := testCurrent(s, ctx, "home")
 	var sealed []byte
-	s.repository.db.QueryRow("SELECT sealed FROM file_storage_profiles WHERE id=?", id).Scan(&sealed)
-	s.repository.db.Exec("INSERT INTO file_storage_profiles VALUES('swapped','other',?)", sealed)
-	if _, _, err := s.profile(ctx, "swapped"); !errors.Is(err, Unavailable) {
+	s.db.QueryRow("SELECT sealed FROM file_storage_profiles WHERE id=?", id).Scan(&sealed)
+	s.db.Exec("INSERT INTO file_storage_profiles VALUES('swapped','other',?)", sealed)
+	if _, _, err := testProfile(s, ctx, "swapped"); !errors.Is(err, Unavailable) {
 		t.Fatal("unbound encrypted credentials", err)
 	}
 	if err := os.Chmod(filepath.Join(s.dir, "file-storage.key"), 0644); err != nil {

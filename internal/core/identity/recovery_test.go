@@ -159,7 +159,7 @@ func TestLocalRecoveryRevokesSessionsAndDoesNotChangeAccess(t *testing.T) {
 		t.Fatal("issuing recovery revoked access before completion")
 	}
 	// Recovery is persistent across server restarts.
-	restarted, err := New(context.Background(), db, Config{PublicURL: testOrigin, OwnerCapabilities: s.ownerCapabilities})
+	restarted, err := New(context.Background(), db, Config{PublicURL: testOrigin, OwnerCapabilities: s.config.OwnerCapabilities})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,9 +186,9 @@ func TestLocalRecoveryRevokesSessionsAndDoesNotChangeAccess(t *testing.T) {
 	if permissions != 1 {
 		t.Fatal("recovery changed permissions")
 	}
-	var revoked int
-	db.QueryRow(`SELECT revoked_at FROM identity_invitations WHERE id='pending'`).Scan(&revoked)
-	if revoked == 0 {
+	var RevokedUnix int
+	db.QueryRow(`SELECT revoked_at FROM identity_invitations WHERE id='pending'`).Scan(&RevokedUnix)
+	if RevokedUnix == 0 {
 		t.Fatal("pending issued invitation survived recovery")
 	}
 	for _, stale := range []*http.Cookie{cookie, otherSession} {

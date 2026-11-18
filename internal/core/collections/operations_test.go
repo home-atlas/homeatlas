@@ -69,7 +69,7 @@ func TestCollectionOperationsWithoutHTTP(t *testing.T) {
 				t.Fatal(err)
 			}
 			if scenario == "write-fails" {
-				if _, err := db.Exec(config.sql(`CREATE TRIGGER reject_update BEFORE UPDATE ON collection_items BEGIN SELECT RAISE(ABORT,'failure'); END`)); err != nil {
+				if _, err := db.Exec(querySQL(config, `CREATE TRIGGER reject_update BEFORE UPDATE ON collection_items BEGIN SELECT RAISE(ABORT,'failure'); END`)); err != nil {
 					t.Fatal(err)
 				}
 			}

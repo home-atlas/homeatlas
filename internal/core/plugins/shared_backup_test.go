@@ -21,7 +21,7 @@ func sharedSnapshot(t *testing.T, s *Store, b Backup) *Store {
 			t.Fatal(err)
 		}
 	}
-	rows, err := s.repository.db.Query("SELECT user_id,id FROM identity_member_ids WHERE household_id='home-a'")
+	rows, err := s.db.Query("SELECT user_id,id FROM identity_member_ids WHERE household_id='home-a'")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func sharedSnapshot(t *testing.T, s *Store, b Backup) *Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := b.Export(context.Background(), s.repository.db, tx, "home-a", false); err != nil {
+	if err := b.Export(context.Background(), s.db, tx, "home-a", false); err != nil {
 		tx.Rollback()
 		t.Fatal(err)
 	}
@@ -48,15 +48,15 @@ func sharedSnapshot(t *testing.T, s *Store, b Backup) *Store {
 	if _, err := b.Inspect(context.Background(), db, ""); err != nil {
 		t.Fatal(err)
 	}
-	return &Store{repository: &storageRepository{db: db}}
+	return &Store{db: db}
 }
 func restoreSharedSnapshot(t *testing.T, s *Store, b Backup, source *Store, recovery map[string]string) {
 	t.Helper()
-	plan, err := b.Prepare(context.Background(), source.repository.db, "", "home-a")
+	plan, err := b.Prepare(context.Background(), source.db, "", "home-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	tx, err := s.repository.db.Begin()
+	tx, err := s.db.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,17 +80,17 @@ func TestSharedRestoreIntersectsCurrentRightsAndRecordIdentity(t *testing.T) {
 	}
 	p := testPackage(t, false)
 	p.Manifest.Storage = "shared"
-	b := Backup{p}
+	b := Backup{Package: p}
 	source := sharedSnapshot(t, s, b)
 	a := sharedAction(t, s, alice, false)
 	sharedCall(t, a, alice, storageRequest{Op: "shared.revoke", Key: "revoked", User: "bob"})
-	if err := a.commit(alice); err != nil {
+	if err := a.Commit(alice); err != nil {
 		t.Fatal(err)
 	}
 	sharedGrantTo(t, s, alice, "downgraded", "bob", "read")
 	a = sharedAction(t, s, alice, false)
 	sharedCall(t, a, alice, storageRequest{Op: "shared.delete", Key: "replaced"})
-	if err := a.commit(alice); err != nil {
+	if err := a.Commit(alice); err != nil {
 		t.Fatal(err)
 	}
 	sharedSet(t, s, alice, "replaced", "new record")
@@ -107,12 +107,12 @@ func TestSharedRestoreIntersectsCurrentRightsAndRecordIdentity(t *testing.T) {
 		t.Fatal(r)
 	}
 	var permission string
-	if err := s.repository.db.QueryRow("SELECT permission FROM plugin_shared_grants WHERE user_id='bob' AND key='downgraded'").Scan(&permission); err != nil || permission != "read" {
+	if err := s.db.QueryRow("SELECT permission FROM plugin_shared_grants WHERE user_id='bob' AND key='downgraded'").Scan(&permission); err != nil || permission != "read" {
 		t.Fatal("downgrade lost", permission, err)
 	}
 	sharedSet(t, s, bob, "unchanged", "editor still authorized")
 	var staging int
-	s.repository.db.QueryRow("SELECT count(*) FROM sqlite_schema WHERE name LIKE '%current_acl'").Scan(&staging)
+	s.db.QueryRow("SELECT count(*) FROM sqlite_schema WHERE name LIKE '%current_acl'").Scan(&staging)
 	if staging != 0 {
 		t.Fatal("restore staging persisted")
 	}
@@ -125,14 +125,14 @@ func TestSharedRecoveryPreservesReadersOfRetiredCreatorWithoutRevivingOwner(t *t
 	bob := storageContext("bob", "home-a", "bob-a")
 	sharedSet(t, s, alice, "retained", "shared household data")
 	sharedGrantTo(t, s, alice, "retained", "bob", "read")
-	if _, err := s.repository.db.Exec("DELETE FROM identity_memberships WHERE user_id='alice' AND household_id='home-a'"); err != nil {
+	if _, err := s.db.Exec("DELETE FROM identity_memberships WHERE user_id='alice' AND household_id='home-a'"); err != nil {
 		t.Fatal(err)
 	}
 	p := testPackage(t, false)
 	p.Manifest.Storage = "shared"
-	b := Backup{p}
+	b := Backup{Package: p}
 	source := sharedSnapshot(t, s, b)
-	if _, err := s.repository.db.Exec("UPDATE identity_member_ids SET id='bob-new' WHERE id='bob-a'"); err != nil {
+	if _, err := s.db.Exec("UPDATE identity_member_ids SET id='bob-new' WHERE id='bob-a'"); err != nil {
 		t.Fatal(err)
 	}
 	restoreSharedSnapshot(t, s, b, source, map[string]string{"bob": "bob-a"})
@@ -143,16 +143,16 @@ func TestSharedRecoveryPreservesReadersOfRetiredCreatorWithoutRevivingOwner(t *t
 		t.Fatal("retired creator lost shared data", r)
 	}
 	var ownerMember string
-	s.repository.db.QueryRow("SELECT owner_member_id FROM plugin_shared_records WHERE key='retained'").Scan(&ownerMember)
+	s.db.QueryRow("SELECT owner_member_id FROM plugin_shared_records WHERE key='retained'").Scan(&ownerMember)
 	if ownerMember != "" {
 		t.Fatal("retired owner was rebound")
 	}
 	// A new membership for the same creator receives no historical ownership.
-	if _, err := s.repository.db.Exec("INSERT INTO identity_memberships(user_id,household_id,role) VALUES('alice','home-a','owner'); INSERT INTO identity_permissions VALUES('alice','home-a','ext-test.read')"); err != nil {
+	if _, err := s.db.Exec("INSERT INTO identity_memberships(user_id,household_id,role) VALUES('alice','home-a','owner'); INSERT INTO identity_permissions VALUES('alice','home-a','ext-test.read')"); err != nil {
 		t.Fatal(err)
 	}
 	var member string
-	s.repository.db.QueryRow("SELECT id FROM identity_member_ids WHERE user_id='alice' AND household_id='home-a'").Scan(&member)
+	s.db.QueryRow("SELECT id FROM identity_member_ids WHERE user_id='alice' AND household_id='home-a'").Scan(&member)
 	alice = storageContext("alice", "home-a", member)
 	a = sharedAction(t, s, alice, true)
 	if sharedCall(t, a, alice, storageRequest{Op: "shared.get", Key: "retained"}).Found {
@@ -168,19 +168,19 @@ func TestSharedRestoreFailureRollsBackRecordsAndACL(t *testing.T) {
 	sharedGrantTo(t, s, alice, "record", "bob", "write")
 	p := testPackage(t, false)
 	p.Manifest.Storage = "shared"
-	b := Backup{p}
+	b := Backup{Package: p}
 	source := sharedSnapshot(t, s, b)
 	sharedSet(t, s, alice, "record", "live")
 	sharedGrantTo(t, s, alice, "record", "bob", "read")
-	if _, err := s.repository.db.Exec("CREATE TRIGGER fail_shared_restore BEFORE INSERT ON plugin_shared_grants BEGIN SELECT RAISE(ABORT,'test'); END"); err != nil {
+	if _, err := s.db.Exec("CREATE TRIGGER fail_shared_restore BEFORE INSERT ON plugin_shared_grants BEGIN SELECT RAISE(ABORT,'test'); END"); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	plan, err := b.Prepare(ctx, source.repository.db, "", "home-a")
+	plan, err := b.Prepare(ctx, source.db, "", "home-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	tx, err := s.repository.db.Begin()
+	tx, err := s.db.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,14 +191,14 @@ func TestSharedRestoreFailureRollsBackRecordsAndACL(t *testing.T) {
 		t.Fatal("failed restore committed")
 	}
 	var value, permission string
-	if err := s.repository.db.QueryRow("SELECT value FROM plugin_shared_records WHERE key='record'").Scan(&value); err != nil || value != "live" {
+	if err := s.db.QueryRow("SELECT value FROM plugin_shared_records WHERE key='record'").Scan(&value); err != nil || value != "live" {
 		t.Fatal(value, err)
 	}
-	if err := s.repository.db.QueryRow("SELECT permission FROM plugin_shared_grants WHERE key='record'").Scan(&permission); err != nil || permission != "read" {
+	if err := s.db.QueryRow("SELECT permission FROM plugin_shared_grants WHERE key='record'").Scan(&permission); err != nil || permission != "read" {
 		t.Fatal(permission, err)
 	}
 	var staging int
-	s.repository.db.QueryRow("SELECT count(*) FROM sqlite_schema WHERE name LIKE '%current_acl'").Scan(&staging)
+	s.db.QueryRow("SELECT count(*) FROM sqlite_schema WHERE name LIKE '%current_acl'").Scan(&staging)
 	if staging != 0 {
 		t.Fatal("failed restore leaked staging")
 	}

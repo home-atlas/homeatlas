@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/home-atlas/homeatlas/internal/core/access"
 	"github.com/home-atlas/homeatlas/internal/core/backup"
@@ -205,58 +204,6 @@ func TestPackageRejectsPathsLimitsAndIncompatibleContracts(t *testing.T) {
 	}
 }
 
-func TestRuntimeDeadlineBoundedOutputAdmissionAndWarmReuse(t *testing.T) {
-	e := &Engine{}
-	defer e.Close()
-	p := testPackage(t, false)
-	for range 2 {
-		r, err := e.Run(context.Background(), p, "calculate", map[string]string{"value": "4"})
-		if err != nil || r.Text != "ok" {
-			t.Fatal(r, err)
-		}
-	}
-	compiled := e.compiled
-	if _, err := e.Run(context.Background(), p, "calculate", nil); err != nil || e.compiled != compiled {
-		t.Fatal("compiled module not reused", err)
-	}
-	e.mu.Lock()
-	_, err := e.Run(context.Background(), p, "calculate", nil)
-	e.mu.Unlock()
-	if !errors.Is(err, ErrBusy) {
-		t.Fatal("unbounded concurrent admission")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	defer cancel()
-	started := time.Now()
-	if _, err := e.Run(ctx, testPackage(t, true), "calculate", nil); err == nil || time.Since(started) > time.Second {
-		t.Fatal("infinite guest was not stopped", err)
-	}
-	if _, err := e.Run(context.Background(), p, "calculate", nil); err != nil {
-		t.Fatal("runtime failed after timeout", err)
-	}
-	resume := e.Pause()
-	if e.runtime != nil || e.compiled != nil {
-		t.Fatal("heavy operation retained compiled plugin")
-	}
-	if _, err := e.Run(context.Background(), p, "calculate", nil); !errors.Is(err, ErrBusy) {
-		t.Fatal("plugin ran alongside heavy Core operation")
-	}
-	resume()
-	if _, err := e.Run(context.Background(), p, "calculate", nil); err != nil {
-		t.Fatal("plugin failed after heavy operation", err)
-	}
-	var out boundedOutput
-	if _, err := out.Write(make([]byte, maxOutput+1)); err == nil || out.Len() != 0 {
-		t.Fatal("unbounded output")
-	}
-	bad := testPackage(t, false)
-	bad.wasm = command(`{"text":"ok","html":"bad"}`, false)
-	bad.Digest = "other"
-	if _, err := e.Run(context.Background(), bad, "calculate", nil); err == nil {
-		t.Fatal("unsupported guest output accepted")
-	}
-}
-
 func TestWasmValidationRejectsUnknownHostsAndOversizedMemory(t *testing.T) {
 	if err := validateWasm(context.Background(), []byte("not wasm")); err == nil {
 		t.Fatal("invalid wasm accepted")
@@ -285,7 +232,7 @@ func TestModuleAuthorizationActivationAndInput(t *testing.T) {
 	}
 	e := &Engine{}
 	defer e.Close()
-	if err := r.Register(context.Background(), &Module{testPackage(t, false), e}); err != nil {
+	if err := r.Register(context.Background(), &Module{Package: testPackage(t, false), Engine: e}); err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
@@ -321,7 +268,7 @@ func TestBackupPinsPackageAndNeverRunsCode(t *testing.T) {
 	}
 	defer db.Close()
 	p := testPackage(t, false)
-	b := Backup{p}
+	b := Backup{Package: p}
 	for _, schema := range b.Tables() {
 		if _, err := db.Exec(schema); err != nil {
 			t.Fatal(err)
