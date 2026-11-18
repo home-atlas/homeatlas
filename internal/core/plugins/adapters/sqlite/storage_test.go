@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -16,7 +17,15 @@ func TestDatabasePathPreservesCacheAdviceTarget(t *testing.T) {
 	}
 	defer db.Close()
 	got, err := DatabasePath(context.Background(), db)
-	if err != nil || got != path {
+	if err != nil {
+		t.Fatalf("cache advice lost its source database: %q %v", got, err)
+	}
+	wantInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotInfo, err := os.Stat(got)
+	if err != nil || !os.SameFile(wantInfo, gotInfo) {
 		t.Fatalf("cache advice lost its source database: %q %v", got, err)
 	}
 }

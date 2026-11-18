@@ -42,6 +42,13 @@ type MoveItem struct {
 	Size            int64
 }
 type Obsolete struct{ ID, Module, Key, Profile, Object string }
+type CleanupTask struct {
+	Household string
+	Obsolete
+}
+
+func PendingID(module, key string) string { return "pending-" + module + "-" + key }
+
 type Location struct {
 	Module, Key             string
 	Profile, Object, Digest string

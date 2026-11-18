@@ -24,6 +24,9 @@ type Repository interface {
 	NextMove(ctx context.Context, house string, c Collection, toRemote bool) (MoveItem, error)
 	PublishMove(ctx context.Context, tx unitofwork.Transaction, house string, c Collection, item MoveItem, next string, old Obsolete, pending *domain.Location) (bool, error)
 	FinishCleanup(ctx context.Context, house, ID string) error
+	StageRemote(context.Context, string, domain.Location) error
+	RemoteReferenced(context.Context, string, string) (bool, error)
+	CleanupTasks(context.Context) ([]domain.CleanupTask, error)
 }
 type Remote interface {
 	Put(context.Context, domain.S3Config, string, io.ReadSeeker, int64) error

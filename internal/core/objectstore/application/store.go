@@ -168,7 +168,7 @@ func (s *Store) Save(ctx context.Context, house string, input Settings, authoriz
 type Pending struct {
 	store *Store
 	domain.Location
-	config S3Config
+	house string
 }
 
 func (p *Pending) Publish(ctx context.Context, tx unitofwork.Transaction) error {
@@ -177,7 +177,7 @@ func (p *Pending) Publish(ctx context.Context, tx unitofwork.Transaction) error 
 func (p *Pending) Abort() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	p.store.remote.Delete(ctx, p.config, p.Object)
+	_ = p.store.clean(ctx, p.house, Obsolete{ID: domain.PendingID(p.Module, p.Key), Module: p.Module, Key: p.Key, Profile: p.Profile, Object: p.Object}, nil)
 }
 func (s *Store) Upload(ctx context.Context, house, Module, Key string, file *os.File, Size int64, Digest string) (*Pending, error) {
 	if !domain.SafeID.MatchString(house) || !domain.SafeID.MatchString(Module) || !domain.SafeID.MatchString(Key) || Size < 1 || Size > 20<<20 {
@@ -190,8 +190,11 @@ func (s *Store) Upload(ctx context.Context, house, Module, Key string, file *os.
 	if ID == "" {
 		return nil, nil
 	}
-	p := &Pending{store: s, Location: domain.Location{Profile: ID, Module: Module, Key: Key, Object: domain.ObjectKey(current.S3, house, Module, Key), Size: Size, Digest: Digest}, config: current.S3}
+	p := &Pending{store: s, Location: domain.Location{Profile: ID, Module: Module, Key: Key, Object: domain.ObjectKey(current.S3, house, Module, Key), Size: Size, Digest: Digest}, house: house}
 	if _, err = file.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	if err = s.repository.StageRemote(ctx, house, p.Location); err != nil {
 		return nil, err
 	}
 	if err = s.remote.Put(ctx, current.S3, p.Object, file, Size); err != nil {

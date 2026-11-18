@@ -20,6 +20,7 @@ import (
 	"github.com/home-atlas/homeatlas/internal/core/modules"
 	"github.com/home-atlas/homeatlas/internal/core/objectstore"
 	"github.com/home-atlas/homeatlas/internal/core/plugins"
+	"github.com/home-atlas/homeatlas/internal/core/recovery"
 )
 
 type App struct {
@@ -45,11 +46,31 @@ type Options struct {
 }
 
 func NewWithOptions(ctx context.Context, db *sql.DB, assets fs.FS, publicURL, dataDir string, mailer identity.Mailer, options Options) (*App, error) {
+	lock, err := recovery.Acquire(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	ready := false
+	defer func() {
+		if !ready {
+			lock.Close()
+		}
+	}()
+	if err := recovery.Temporary(ctx, dataDir); err != nil {
+		return nil, fmt.Errorf("recover temporary files: %w", err)
+	}
 	packages, err := plugins.Load(filepath.Join(dataDir, "plugins"))
 	if err != nil {
 		return nil, fmt.Errorf("load plugins: %w", err)
 	}
-	return newWithPlugins(ctx, db, assets, publicURL, dataDir, mailer, options, packages)
+	a, err := newWithPlugins(ctx, db, assets, publicURL, dataDir, mailer, options, packages)
+	if err != nil {
+		return nil, err
+	}
+	closeApp := a.close
+	a.close = func() error { return errors.Join(closeApp(), lock.Close()) }
+	ready = true
+	return a, nil
 }
 
 func newWithPlugins(ctx context.Context, db *sql.DB, assets fs.FS, publicURL, dataDir string, mailer identity.Mailer, options Options, packages []*plugins.Package) (*App, error) {
@@ -202,6 +223,9 @@ func newWithPlugins(ctx context.Context, db *sql.DB, assets fs.FS, publicURL, da
 	}
 	backups, err := newBackups(ctx, db, accounts, dataDir, participants...)
 	if err != nil {
+		return nil, err
+	}
+	if err := storage.Reconcile(ctx, storageCollections); err != nil {
 		return nil, err
 	}
 	// The WASI host forbids writes from these declared query actions, so they

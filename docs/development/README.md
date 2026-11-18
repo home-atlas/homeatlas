@@ -19,6 +19,8 @@ Pull requests run the three critical validation jobs. Merges into main run those
 
 Real Go-WASI integration tests intentionally use native execution because race instrumentation exceeds the production cold-runtime budget; small guest fixtures still exercise runtime/storage boundaries under race. The public SDK example is compiled, installed, executed and restarted in `TestPersistentPluginPublicSDKExample`.
 
+`TestPersistentPluginCrashRecovery` adds native SIGKILL checkpoints for upload, backup and pre/post-commit restore, also in critical CI on Unix. Core recovery and remote-intent checks run with race. `TestSecondInstanceCannotCleanActiveWorkspace` checks the lock before cleanup. See [crash recovery](../deployment/crash-recovery.md) for preservation and test limits.
+
 Use temporary data and synthetic accounts. Test backups, restores, grants/revocation and restart when changing those paths; preserve compatibility fixtures. Do not lower resource, password or encryption limits to speed up CI. See [CONTRIBUTING](../../CONTRIBUTING.md).
 
 ## Persistence changes

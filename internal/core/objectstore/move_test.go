@@ -97,6 +97,10 @@ func TestMoveFailureAndRevocationKeepSource(t *testing.T) {
 		t.Fatal("failed destination accepted")
 	}
 	server.Deny(false)
+	// A denied deletion is now durable even when the destination PUT failed.
+	if err := s.RecoverPending(ctx, []Collection{c}); err != nil {
+		t.Fatal(err)
+	}
 	if raw, err := os.ReadFile(filepath.Join(c.Directory, "key-first")); err != nil || string(raw) != data {
 		t.Fatal("failed copy lost source", err)
 	}
