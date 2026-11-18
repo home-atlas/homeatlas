@@ -78,6 +78,9 @@ func TestHouseholdSettingsAuthorizationValidationAndRestart(t *testing.T) {
 	if w := perform(f.app, "PATCH", "/api/household/settings", body, member); w.Code != 403 {
 		t.Fatal("revoked management still works")
 	}
+	if err := f.app.Close(); err != nil {
+		t.Fatal(err)
+	}
 	restarted, err := app.New(context.Background(), f.db, f.assets, origin, f.dataDir, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -149,6 +152,9 @@ func TestHouseholdModuleTogglePreservesFilesGrantsAndOtherHouseholds(t *testing.
 	}
 	if w := perform(f.app, "GET", "/api/household/settings", nil, f.cookie); w.Code != 200 {
 		t.Fatal("module toggle disabled Core")
+	}
+	if err := f.app.Close(); err != nil {
+		t.Fatal(err)
 	}
 	restarted, err := app.New(context.Background(), f.db, f.assets, origin, f.dataDir, nil)
 	if err != nil {

@@ -300,6 +300,9 @@ func TestInvitationPersistenceAndOneTimeOwnerUpgrade(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := f.app.Close(); err != nil {
+		t.Fatal(err)
+	}
 	restarted, err := app.New(context.Background(), f.db, f.assets, origin, f.dataDir, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -312,6 +315,9 @@ func TestInvitationPersistenceAndOneTimeOwnerUpgrade(t *testing.T) {
 		t.Fatal("legacy reader got elevated permissions")
 	}
 	if _, err := f.db.Exec(`DELETE FROM identity_permissions WHERE user_id=? AND capability='documents.share'`, f.state.Session.User.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.Close(); err != nil {
 		t.Fatal(err)
 	}
 	again, err := app.New(context.Background(), f.db, f.assets, origin, f.dataDir, nil)
