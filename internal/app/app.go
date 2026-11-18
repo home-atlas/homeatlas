@@ -267,11 +267,12 @@ func newWithPlugins(ctx context.Context, db *sql.DB, assets fs.FS, publicURL, da
 			return
 		}
 		query := strings.TrimSpace(r.URL.Query().Get("q"))
-		if len(query) > 200 {
+		selected := r.URL.Query().Get("module")
+		if len(query) > 200 || selected != "" && !modules.ValidID(selected) {
 			modules.JSON(w, 400, map[string]string{"error": "query_too_long"})
 			return
 		}
-		matches, err := registry.Search(r.Context(), query)
+		matches, err := registry.SearchModule(r.Context(), query, selected)
 		if err != nil {
 			modules.JSON(w, 500, map[string]string{"error": "search_unavailable"})
 			return
@@ -309,6 +310,9 @@ func newWithPlugins(ctx context.Context, db *sql.DB, assets fs.FS, publicURL, da
 		}
 		if path == "index.html" {
 			w.Header().Set("Cache-Control", "no-cache")
+		}
+		if path == "manifest.webmanifest" {
+			w.Header().Set("Content-Type", "application/manifest+json")
 		}
 		http.ServeFileFS(w, r, assets, path)
 	})

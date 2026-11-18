@@ -70,6 +70,7 @@ func (s *Transport) writeResult(w http.ResponseWriter, r *http.Request, out Resu
 	}
 }
 func (s *Transport) Mount(mux *http.ServeMux) {
+	s.mountAccount(mux)
 	s.mountMembers(mux)
 	s.mountAlternativeAccess(mux)
 	mux.HandleFunc("GET /api/household/settings", s.householdSettings)

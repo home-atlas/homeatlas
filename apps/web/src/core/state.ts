@@ -2,7 +2,7 @@ import { computed, shallowRef } from 'vue'
 import type { Router } from 'vue-router'
 import { canOpenModule, registerModules, type ModuleStatus } from './modules'
 import { get } from './api'
-import { session } from './auth'
+import { session, sessionScope } from './auth'
 
 export const modules = shallowRef<ModuleStatus[]>([])
 export const connectionError = shallowRef('')
@@ -10,7 +10,7 @@ export const healthy = shallowRef(false)
 export const navigationModules = computed(() => modules.value.filter(module => canOpenModule(module, session.value?.permissions ?? [])))
 const moduleRevisions = new WeakMap<Router, number>()
 const pendingModules = new WeakMap<Router, { context: string; promise: Promise<boolean> }>()
-const moduleContext = () => JSON.stringify([session.value?.user.id, session.value?.household.id, session.value?.role, session.value?.permissions])
+const moduleContext = sessionScope
 
 export function refreshModules(router: Router, force = false): Promise<boolean> {
   const context = moduleContext(), pending = pendingModules.get(router)

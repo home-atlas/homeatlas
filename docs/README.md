@@ -10,6 +10,8 @@
 - [Compilable private-notes example](../examples/private-notes/README.md)
 - [Generic systemd installation](deployment/systemd.md)
 - [Optional Tailscale lab and Proxmox recipe](deployment/tailscale.md)
+- [Recovery after an interrupted operation](deployment/crash-recovery.md)
+- [V0.1 family pilot and acceptance criteria](pilot/v0.1.md)
 - [Contributing](../CONTRIBUTING.md) and [private vulnerability reporting](../SECURITY.md)
 
 These documents describe the implementation and its current limits. Experimental APIs can evolve with explicit compatibility and migration changes.

@@ -63,6 +63,7 @@ func (s *Application) LoadSession(ctx context.Context, token string) (*Session, 
 	if err != nil {
 		return nil, err
 	}
+	current.ID = domain.SessionHandle(digest[:])
 	if now-lastSeen >= 60 {
 		if _, err := s.store.TouchSession(ctx, nil, now, digest[:]); err != nil {
 			return nil, err

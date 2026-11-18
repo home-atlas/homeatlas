@@ -9,7 +9,8 @@ const route = useRoute(), router = useRouter()
 const crumbs = computed(() => {
   const module = moduleForPath(navigationModules.value, route.path)
   if (module) return route.path === module.navigation.path ? [{ label: module.navigation.label }] : [{ label: module.navigation.label, path: module.navigation.path }, { label: 'Detalle' }]
-  return [{ label: typeof route.meta.breadcrumb === 'string' ? route.meta.breadcrumb : 'Página no disponible' }]
+  const parent = route.meta.breadcrumbParent as { label: string; path: string } | undefined
+  return [...(parent ? [parent] : []), { label: typeof route.meta.breadcrumb === 'string' ? route.meta.breadcrumb : 'Página no disponible' }]
 })
 function backTo(event: MouseEvent, path: string) {
   if (event.button || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return

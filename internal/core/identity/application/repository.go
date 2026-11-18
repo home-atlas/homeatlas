@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/home-atlas/homeatlas/internal/core/access"
+	"github.com/home-atlas/homeatlas/internal/core/identity/domain"
 	"github.com/home-atlas/homeatlas/internal/core/unitofwork"
 )
 
@@ -17,6 +18,15 @@ type Repository interface {
 	MembershipsRepository
 	RecoveryRepository
 	HouseholdRepository
+	OwnAccountRepository
+}
+
+type OwnAccountRepository interface {
+	ReadOwnAccount(context.Context, unitofwork.Transaction, []byte, string, string, string, int64, int64) (domain.AccountProfile, error)
+	SaveOwnName(context.Context, unitofwork.Transaction, string, string) error
+	ReadOwnSessions(context.Context, unitofwork.Transaction, string, string, []byte, int64, int64) ([]domain.AccountSession, error)
+	DeleteOwnSession(context.Context, unitofwork.Transaction, string, string, []byte) error
+	DeleteOtherOwnSessions(context.Context, unitofwork.Transaction, string, string, []byte) error
 }
 
 type AccountsRepository interface {

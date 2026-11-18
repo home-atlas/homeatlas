@@ -4,7 +4,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { Button } from '@/components/ui/button'
 import AppIcon from '@/components/AppIcon.vue'
 import { navigationModules } from '@/core/state'
-import { session } from '@/core/auth'
+import { session, sessionScope } from '@/core/auth'
 import { ApiError, get } from '@/core/api'
 import { canManageHousehold } from '@/core/household'
 import { getWebModule, type ModuleStatus } from '@/core/modules'
@@ -33,7 +33,7 @@ const searchError = ref('')
 const matches = ref<SearchResult[]>([])
 const searchInput = ref<HTMLInputElement>()
 let recentRevision = 0, searchRevision = 0
-const context = computed(() => JSON.stringify([session.value?.user.id, session.value?.household.id, session.value?.household.timezone, session.value?.permissions, session.value?.role, navigationModules.value.map(m => [m.id, m.version, m.navigation.path])]))
+const context = computed(() => JSON.stringify([sessionScope(), session.value?.household.timezone, navigationModules.value.map(m => [m.id, m.version, m.navigation.path])]))
 const visibleMatches = computed(() => matches.value.filter(match => navigationModules.value.some(module => module.id === match.module && moduleLink(match.path, module.navigation.path))))
 function message(error: unknown) {
   return error instanceof ApiError && error.status === 401 ? 'Tu sesión ha terminado. Vuelve a iniciar sesión.' : 'No pudimos cargar la información. Inténtalo de nuevo.'
@@ -114,6 +114,7 @@ async function runSearch(term = query.value) {
             <Button type="submit" size="icon" class="absolute top-1/2 right-2 -translate-y-1/2 rounded-xl" :disabled="!navigationModules.length" aria-label="Buscar en mi hogar"><AppIcon name="arrow" /></Button>
           </form>
           <p id="search-help" class="sr-only">Busca por título, descripción o etiquetas. Solo verás contenido al que tienes acceso.</p>
+          <Button as-child variant="ghost" class="mt-2"><RouterLink :to="{ path: '/search', query: { q: query.trim() || undefined } }">Abrir búsqueda con filtros<AppIcon name="arrow" class="size-4" /></RouterLink></Button>
           <div v-if="suggestions.length" class="mt-4 grid gap-2 sm:grid-cols-3 sm:gap-3">
             <button v-for="suggestion in suggestions" :key="suggestion.key" type="button" class="home-suggestion" :class="'home-tint-' + suggestion.tone" @click="search(suggestion.term)"><AppIcon :name="suggestion.icon" class="size-6" /><span>{{ suggestion.label }}</span></button>
           </div>

@@ -11,7 +11,7 @@ async function focusSearch(event: MouseEvent) {
   if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return
   emit('search')
   await nextTick()
-  document.getElementById('home-query')?.focus()
+  document.getElementById('global-query')?.focus()
 }
 </script>
 <template>
@@ -19,7 +19,7 @@ async function focusSearch(event: MouseEvent) {
     <RouterLink to="/" aria-label="HomeAtlas, inicio" class="sidebar-brand mx-1 flex min-h-20 items-center px-2" @click="$emit('navigate')"><BrandLogo /></RouterLink>
     <nav aria-label="Principal" class="sidebar-navigation space-y-0.5" @click="$emit('navigate')">
       <RouterLink to="/" class="nav-item gap-3" :class="route.path === '/' && !route.hash ? 'nav-active' : ''"><AppIcon name="home" />Inicio</RouterLink>
-      <RouterLink to="/#home-search" class="nav-item gap-3" @click="focusSearch" :class="route.path === '/' && route.hash === '#home-search' ? 'nav-active' : ''"><AppIcon name="search" />Buscar</RouterLink>
+      <RouterLink to="/search#global-query" class="nav-item gap-3" @click="focusSearch" active-class="nav-active"><AppIcon name="search" />Buscar</RouterLink>
       <RouterLink to="/family" class="nav-item gap-3" active-class="nav-active"><AppIcon name="users" />Familia</RouterLink>
       <div class="sidebar-separator mx-3 border-t" />
       <RouterLink to="/modules" class="sidebar-module-label" aria-label="Ver mis módulos">Mis módulos</RouterLink>

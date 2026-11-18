@@ -2,6 +2,7 @@ import { computed, shallowRef } from 'vue'
 import { get, post } from './api'
 
 export interface Session {
+  id?: string
   user: { id: string; name: string; email: string; username?: string; emailVerified?: boolean }
   household: { id: string; name: string; timezone: string }
   role: string
@@ -19,6 +20,11 @@ const state = shallowRef<AuthState>({ setupRequired: false, session: null })
 let revision = 0
 export const session = computed(() => state.value.session)
 export const smtpEnabled = computed(() => state.value.smtpEnabled === true)
+
+export function sessionScope() {
+  const value = session.value
+  return JSON.stringify([value?.id, value?.user.id, value?.household.id, value?.role, value?.permissions, value?.expiresAt, value?.user.username])
+}
 
 export function setAuthState(next: AuthState) { revision++; state.value = next }
 

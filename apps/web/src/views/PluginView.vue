@@ -2,7 +2,7 @@
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { ApiError, get, post } from '@/core/api'
-import { session } from '@/core/auth'
+import { session, sessionScope } from '@/core/auth'
 import { modules } from '@/core/state'
 import type { PluginManifest, PluginView as View } from '@/core/plugins'
 import AppIcon from '@/components/AppIcon.vue'
@@ -24,7 +24,7 @@ const active = computed(() => modules.value.some(m => m.id === props.pluginId &&
 const canRead = computed(() => active.value && !!session.value?.permissions.includes(props.pluginId + '.read'))
 const view = computed(() => manifest.value?.views.find(v => v.id === props.viewId) ?? (!props.viewId ? manifest.value?.views[0] : undefined))
 const canRun = computed(() => canRead.value && !!session.value?.permissions.includes(props.pluginId + '.' + (view.value?.permission ?? (view.value?.readOnly ? 'read' : 'write'))))
-const context = computed(() => JSON.stringify([props.pluginId, props.viewId, session.value?.user.id, session.value?.household.id, session.value?.permissions, canRead.value]))
+const context = computed(() => JSON.stringify([props.pluginId, props.viewId, sessionScope(), canRead.value]))
 function actionLabel(item: View) { return item.permission === 'share' ? 'Accesos' : item.readOnly ? 'Consulta' : 'Edición' }
 function actionIcon(item: View) { return item.permission === 'share' ? 'users' : item.readOnly ? 'book' : 'edit' }
 function message(e: unknown) {

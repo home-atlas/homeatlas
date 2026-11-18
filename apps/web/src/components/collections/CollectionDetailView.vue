@@ -11,7 +11,7 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 import AppIcon from '@/components/AppIcon.vue'
 import { ApiError, get } from '@/core/api'
 import { downloadOriginal } from './download'
-import { session, setAuthState } from '@/core/auth'
+import { session, sessionScope, setAuthState } from '@/core/auth'
 import CollectionDrawer from './CollectionDrawer.vue'
 import SharingDialog from './SharingDialog.vue'
 import { errorMessage, formatDate, formatSize, type Item } from './model'
@@ -24,7 +24,7 @@ const canRead = computed(() => !!session.value?.permissions.includes(collectionI
 const isOwner = computed(() => !!document.value && document.value.ownerId === session.value?.user.id)
 const canWrite = computed(() => isOwner.value && session.value?.permissions.includes(collectionId + '.write'))
 const canShare = computed(() => isOwner.value && session.value?.permissions.includes(collectionId + '.share'))
-const context = computed(() => JSON.stringify([session.value?.user.id, session.value?.household.id, session.value?.role, session.value?.permissions]))
+const context = computed(sessionScope)
 const sharing = ref(false), shareCount = ref<number | null>(null), checkingAccess = ref(false), accessError = ref(false)
 const fileType = computed(() => !document.value?.hasFile ? 'Sin archivo' : ({ 'application/pdf': 'PDF', 'image/png': 'PNG', 'image/jpeg': 'JPEG', 'text/plain': 'TXT' }[document.value.mediaType] ?? 'Archivo'))
 const accessTitle = computed(() => !isOwner.value ? 'Compartido contigo' : shareCount.value === 0 ? 'Privado · Solo tú' : shareCount.value === null ? 'Acceso controlado' : 'Compartido con miembros')

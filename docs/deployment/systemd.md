@@ -1,5 +1,7 @@
 # Generic systemd installation
 
+This is the primary V0.1 installation route. Use the [Tailscale recipe](tailscale.md) for private access and optional automatic deployment. Docker distribution is deferred until after V0.1.
+
 This recipe targets Debian/Ubuntu Linux amd64 with systemd and Python 3.11+, `sudo`/`visudo` and `runuser`. The current automated executable is Linux amd64. HomeAtlas itself can also be built from source and run without this installer.
 
 Choose your browser origin and configure DNS/TLS through a reverse proxy. Proxmox and Tailscale are optional.

@@ -167,6 +167,7 @@ type Household struct {
 	Timezone string `json:"timezone"`
 }
 type Session struct {
+	ID           string    `json:"id"`
 	User         User      `json:"user"`
 	Household    Household `json:"household"`
 	Role         string    `json:"role"`
