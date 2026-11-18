@@ -143,6 +143,9 @@ func TestDocumentUploadDetailEditAndDownload(t *testing.T) {
 	if _, err := f.db.Exec(`DELETE FROM identity_permissions WHERE capability='documents.write'`); err != nil {
 		t.Fatal(err)
 	}
+	if err := f.app.Close(); err != nil {
+		t.Fatal(err)
+	}
 	restarted, err := app.New(context.Background(), f.db, f.assets, origin, f.dataDir, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -295,6 +298,9 @@ func TestOwnerPermissionUpgradeIsScoped(t *testing.T) {
 	}
 	// Reproduce the pre-upload installation: identity tables exist, app upgrade has not run.
 	if _, err := f.db.Exec(`DELETE FROM schema_migrations WHERE module='app.document-owner-permissions'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.Close(); err != nil {
 		t.Fatal(err)
 	}
 	restarted, err := app.New(context.Background(), f.db, f.assets, origin, f.dataDir, nil)

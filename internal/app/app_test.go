@@ -144,6 +144,9 @@ func TestModuleDisablePersistsAndPreservesData(t *testing.T) {
 	if got := perform(f.app, "GET", "/api/search?q=Manual", nil, f.cookie); strings.TrimSpace(got.Body.String()) != "[]" {
 		t.Fatalf("disabled module appeared in search: %s", got.Body.String())
 	}
+	if err := f.app.Close(); err != nil {
+		t.Fatal(err)
+	}
 	restarted, err := app.New(ctx, f.db, f.assets, origin, f.dataDir, nil)
 	if err != nil {
 		t.Fatal(err)

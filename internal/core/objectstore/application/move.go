@@ -159,7 +159,10 @@ func (s *Store) moveOne(ctx context.Context, house, revision string, c Collectio
 		}
 	}()
 	if targetProfile != "" {
-		pending = &Pending{store: s, Location: domain.Location{Profile: targetProfile, Module: c.ID, Key: next, Object: domain.ObjectKey(target, house, c.ID, next), Size: item.Size, Digest: item.Digest}, config: target}
+		pending = &Pending{store: s, Location: domain.Location{Profile: targetProfile, Module: c.ID, Key: next, Object: domain.ObjectKey(target, house, c.ID, next), Size: item.Size, Digest: item.Digest}, house: house}
+		if err = s.repository.StageRemote(ctx, house, pending.Location); err != nil {
+			return err
+		}
 		if err = s.remote.Put(ctx, target, pending.Object, src, item.Size); err != nil {
 			return Unavailable
 		}
@@ -242,6 +245,13 @@ func verifyOriginal(file *os.File, item MoveItem) error {
 }
 func (s *Store) clean(ctx context.Context, house string, old Obsolete, collections []Collection) error {
 	if old.Profile != "" {
+		referenced, err := s.repository.RemoteReferenced(ctx, old.Profile, old.Object)
+		if err != nil {
+			return err
+		}
+		if referenced {
+			return s.repository.FinishCleanup(ctx, house, old.ID)
+		}
 		owner, c, err := s.Profile(ctx, old.Profile)
 		if err != nil || owner != house {
 			return Unavailable

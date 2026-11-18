@@ -79,6 +79,10 @@ func (s *Repository) Publish(ctx context.Context, tx unitofwork.Transaction, p d
 		return err
 	}
 	_, err = q.ExecContext(ctx, "INSERT INTO file_storage_locations VALUES(?,?,?,?,?,?)", p.Module, p.Key, p.Profile, p.Object, p.Size, p.Digest)
+	if err != nil {
+		return err
+	}
+	_, err = q.ExecContext(ctx, "DELETE FROM file_storage_cleanup WHERE id=? AND profile_id=? AND object_key=?", domain.PendingID(p.Module, p.Key), p.Profile, p.Object)
 	return err
 }
 

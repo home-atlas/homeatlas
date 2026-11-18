@@ -199,6 +199,9 @@ func TestHouseholdBackupRoundTripPreservesLiveIdentityAndIsolation(t *testing.T)
 	if w := perform(f.app, "GET", "/api/documents/"+newDoc.ID, nil, f.cookie); w.Code != 200 {
 		t.Fatal("undo did not restore later document")
 	}
+	if err := f.app.Close(); err != nil {
+		t.Fatal(err)
+	}
 	restarted, err := app.New(context.Background(), f.db, f.assets, origin, f.dataDir, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -245,6 +248,9 @@ func TestBackupOwnerPermissionCSRFAndRevocation(t *testing.T) {
 	}
 	if w := backupRequest(f, f.cookie); w.Code != 403 {
 		t.Fatal("revoked backup allowed")
+	}
+	if err := f.app.Close(); err != nil {
+		t.Fatal(err)
 	}
 	restarted, err := app.New(context.Background(), f.db, f.assets, origin, f.dataDir, nil)
 	if err != nil {

@@ -53,6 +53,8 @@ Plugin application code stages private/shared storage calls, checks current perm
 
 Backup snapshot codecs and `backup.Provider` intentionally remain SQLite-specific infrastructure. Their schemas/versions and migration SQL bytes are unchanged. The host coordinator in `internal/app` retains its one-process consistency gate; this refactor does not introduce interchangeable database engines or multi-process coordination.
 
+Startup maintenance runs under an exclusive data-directory lock, before requests/workers. The recovery filesystem adapter removes known workspaces and quarantines unreferenced collection originals; SQLite adapters supply references across all households. New remote uploads use the existing durable cleanup queue before PUT and consume the intent in the publication transaction. See [crash recovery and its limits](../deployment/crash-recovery.md).
+
 ## Security boundaries
 
 - Cookie sessions establish identity; headers and plugin inputs cannot choose a household or acting user. Cross-origin writes are rejected.

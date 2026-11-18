@@ -215,6 +215,8 @@ This checks installation without modifying the executable, upload, search, downl
 
 The current installation is built from source. Run **one process per data directory** and keep that directory on persistent storage.
 
+Startup locks that directory and recovers interrupted working files. Unreferenced local originals are preserved in private recovery batches; successful backups are retained. See [recovery after an interrupted operation](docs/deployment/crash-recovery.md).
+
 To serve the application behind an HTTPS reverse proxy:
 
 ```sh
