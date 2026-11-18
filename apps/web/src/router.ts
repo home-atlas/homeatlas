@@ -20,6 +20,8 @@ export function createAppRouter(history: RouterHistory) {
       { path: '/', name: 'home', meta: { breadcrumb: 'Inicio' }, component: () => import('./views/HomeView.vue') },
       { path: '/modules', name: 'modules', meta: { breadcrumb: 'Mis módulos' }, component: () => import('./views/ModulesView.vue') },
       { path: '/settings', name: 'settings', meta: { breadcrumb: 'Ajustes' }, component: () => import('./views/SettingsView.vue') },
+      { path: '/settings/account', name: Symbol.for('homeatlas.core.account'), meta: { breadcrumb: 'Mi cuenta', breadcrumbParent: { label: 'Ajustes', path: '/settings' } }, component: () => import('./views/AccountView.vue') },
+      { path: '/search', name: 'search', meta: { breadcrumb: 'Buscar' }, component: () => import('./views/SearchView.vue') },
       { path: '/:pathMatch(.*)*', component: () => import('./views/NotFoundView.vue') },
     ],
   })

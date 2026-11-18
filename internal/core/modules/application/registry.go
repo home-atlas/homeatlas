@@ -112,6 +112,10 @@ func (r *Registry) List() []Status {
 }
 
 func (r *Registry) Search(ctx context.Context, query string) ([]SearchResult, error) {
+	return r.SearchModule(ctx, query, "")
+}
+
+func (r *Registry) SearchModule(ctx context.Context, query, selected string) ([]SearchResult, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	result := []SearchResult{}
@@ -125,7 +129,7 @@ func (r *Registry) Search(ctx context.Context, query string) ([]SearchResult, er
 	}
 	for _, id := range r.order {
 		e := r.entries[id]
-		if !moduleEnabled(states, id) || !access.Allows(ctx, e.module.SearchPermission()) {
+		if selected != "" && selected != id || !moduleEnabled(states, id) || !access.Allows(ctx, e.module.SearchPermission()) {
 			continue
 		}
 		matches, err := e.module.Search(ctx, query)

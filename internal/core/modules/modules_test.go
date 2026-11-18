@@ -30,6 +30,52 @@ type dependent struct {
 	dependencies []string
 }
 
+type searchProbe struct {
+	dependent
+	calls *int
+}
+
+func (m searchProbe) Search(context.Context, string) ([]modules.SearchResult, error) {
+	*m.calls++
+	return []modules.SearchResult{{Module: m.id, ID: "one", Title: m.id, Path: "/" + m.id + "/one"}}, nil
+}
+
+func TestSearchModuleFilterPreservesAvailabilityAndPermissions(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "modules.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	r, err := modules.New(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := []int{0, 0, 0}
+	for i, id := range []string{"documents", "notes", "hidden"} {
+		if err = r.Register(context.Background(), searchProbe{dependent: dependent{id: id}, calls: &calls[i]}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := access.WithPrincipal(context.Background(), access.Principal{UserID: "reader", HouseholdID: "home", Permissions: map[string]bool{"documents.read": true, "notes.read": true}})
+	items, err := r.SearchModule(ctx, "manual", "documents")
+	if err != nil || len(items) != 1 || items[0].Module != "documents" || calls[0] != 1 || calls[1] != 0 || calls[2] != 0 {
+		t.Fatal(items, calls, err)
+	}
+	for _, id := range []string{"hidden", "unknown"} {
+		items, err = r.SearchModule(ctx, "manual", id)
+		if err != nil || len(items) != 0 {
+			t.Fatal("filter leaks unavailable module", id, items, err)
+		}
+	}
+	if err = r.SetHouseholdEnabled(ctx, "documents", false, func(unitofwork.Transaction) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	items, err = r.SearchModule(ctx, "manual", "documents")
+	if err != nil || len(items) != 0 || calls[0] != 1 {
+		t.Fatal("disabled module searched", items, err)
+	}
+}
+
 func (m dependent) Manifest() modules.Manifest {
 	return modules.Manifest{ID: m.id, Name: m.id, Version: "1.0.0", ContractVersion: modules.ContractVersion, Capabilities: []string{m.id + ".read"}, Dependencies: m.dependencies, Navigation: modules.Navigation{Path: "/" + m.id}}
 }

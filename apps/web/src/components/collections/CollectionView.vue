@@ -3,7 +3,7 @@ import { useCollection } from './model'
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ApiError, get } from '@/core/api'
-import { session, setAuthState } from '@/core/auth'
+import { session, sessionScope, setAuthState } from '@/core/auth'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -32,7 +32,7 @@ const returnFocus = () => document.getElementById(focusId.value) ?? document.get
 const router = useRouter()
 const canRead = computed(() => !!session.value?.permissions.includes(collectionId + '.read'))
 const canWrite = computed(() => canRead.value && session.value?.permissions.includes(collectionId + '.write'))
-const context = computed(() => JSON.stringify([session.value?.user.id, session.value?.household.id, session.value?.role, session.value?.permissions]))
+const context = computed(sessionScope)
 let request = 0, mounted = true
 const current = (account: string) => mounted && canRead.value && context.value === account
 const own = (record: Item) => record.ownerId === session.value?.user.id

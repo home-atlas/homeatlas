@@ -1,5 +1,7 @@
 # Optional Tailscale lab
 
+systemd plus private Tailscale access is the reference V0.1 setup. This integration remains opt-in for other installations and forks; core operation and release publication do not require a tailnet.
+
 Use this integration when the server should be reachable only from your tailnet. Any compatible Debian/Ubuntu amd64 VM works; Proxmox is one possible hypervisor. No Proxmox API is used by the application or deploy pipeline.
 
 1. Provision the VM and install the prerequisites from [systemd setup](systemd.md).

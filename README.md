@@ -32,6 +32,9 @@ The core manages accounts, households and permissions. Product features arrive a
 | Storage | Choose local disk or an S3-compatible bucket; move existing documents between them from Settings. |
 | Backups | Create encrypted backups, schedule them, restore household data or recover a household on a new installation. |
 | Access | Sign in with a username or email and password; set up assisted access with a device-bound PIN for eligible accounts. |
+| My account | Edit your display name and close your own active sessions without changing household permissions. |
+| Global search | Search authorized metadata across enabled modules, with a module filter and shareable search URL. |
+| Mobile access | Responsive interface and browser installation metadata; a connection to your server is required. |
 | Plugins | Install approved WASI packages through the CLI and restart, without rebuilding the core. |
 
 Search currently covers metadata, not OCR or file contents. AI, inventory and warranty features are on the roadmap.
@@ -152,7 +155,9 @@ deploy/systemd/       Generic systemd installation and rollback
 docs/                 Public architecture, development and plugin contracts
 ```
 
-## Optional Tailscale lab deployment
+## Native installation and automatic deployment
+
+The primary V0.1 installation is the native Go executable managed by **systemd**. **Tailscale** is the reference private-access recipe and the existing lab's automatic deployment path. Generic HTTPS origins remain supported. Docker is an optional distribution route deferred until after V0.1; it is not required for installation or the family pilot.
 
 [CI and release](.github/workflows/ci.yml) runs critical Go checks, all frontend tests and deployment checks once per workflow run. Pull requests validate only. A merge into `main` runs the same checks, builds Linux amd64 HomeAtlas and Documents, then automatically creates a tag and prerelease for that exact commit. Tags use `v<VERSION>-dev.<workflow run number>`, taking the product base version from the root `VERSION` file; the number can have gaps because PR checks also increment it. No manual tag is needed, and tag pushes do not start another pipeline. Feature branch pushes do not duplicate their PR's CI.
 
@@ -236,7 +241,9 @@ See the [documentation index](docs/README.md) for architecture and decisions, op
 
 ## Roadmap
 
+- Finish the [V0.1 family pilot](docs/pilot/v0.1.md) before declaring the release stable; technical checks alone do not complete that pilot.
 - Reproducible distribution and deployment across more environments.
+- Optional Docker distribution after V0.1, alongside the primary systemd installation.
 - Evolution and stabilization of the public plugin contract.
 - In-app plugin installation, managed package updates and uninstallation.
 - Inventory and warranty modules.

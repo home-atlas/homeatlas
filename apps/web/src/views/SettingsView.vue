@@ -6,7 +6,6 @@ import { refreshSession, session } from '@/core/auth'
 import { canManageHousehold, householdError } from '@/core/household'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import AccountAccessCard from '@/components/AccountAccessCard.vue'
 import FileStorageCard from '@/components/FileStorageCard.vue'
 import HouseholdBackupCard from '@/components/HouseholdBackupCard.vue'
 import HouseholdBackupScheduleCard from '@/components/HouseholdBackupScheduleCard.vue'
@@ -48,7 +47,8 @@ onMounted(load)
     <p v-if="loading" aria-live="polite" class="text-sm text-muted-foreground">Cargando configuración…</p>
     <Button v-else-if="!settings" variant="outline" @click="load">Reintentar</Button>
     <template v-if="settings">
-      <AccountAccessCard />
+      <Card><CardHeader><CardTitle>Mi cuenta</CardTitle><CardDescription>Tu perfil, acceso con contraseña o PIN y sesiones activas.</CardDescription></CardHeader><CardContent><Button as-child variant="outline"><RouterLink to="/settings/account">Gestionar mi cuenta</RouterLink></Button></CardContent></Card>
+      <Card><CardHeader><CardTitle>HomeAtlas en tu pantalla de inicio</CardTitle><CardDescription>Abre tu instalación como una aplicación desde tu teléfono o computadora.</CardDescription></CardHeader><CardContent><p class="text-sm leading-6 text-muted-foreground">En el menú de tu navegador, elige «Instalar aplicación» o «Añadir a pantalla de inicio», si está disponible. El icono abre esta misma instalación y mantiene tus permisos. Necesitas conexión a tu servidor para consultar y guardar datos.</p></CardContent></Card>
       <Card><CardHeader><CardTitle>Tu hogar</CardTitle><CardDescription>Nombre y zona horaria compartidos por los miembros de este hogar.</CardDescription></CardHeader><CardContent><form class="max-w-xl space-y-6" :aria-busy="busy" @submit.prevent="save"><fieldset :disabled="busy || !canManage" class="space-y-5"><div class="space-y-2"><label for="household-settings-name" class="form-label">Nombre del hogar</label><input id="household-settings-name" v-model="form.name" name="name" maxlength="100" required class="form-input" /></div><div class="space-y-2"><label for="household-settings-timezone" class="form-label">Zona horaria del hogar</label><select id="household-settings-timezone" v-model="form.timezone" name="timezone" class="form-input" required><option v-for="zone in timezones" :key="zone" :value="zone">{{ zone }}</option></select></div></fieldset><p v-if="!canManage" class="text-sm leading-6 text-muted-foreground">Puedes consultar estos ajustes. Solo el propietario o un administrador con permiso de gestión puede cambiarlos.</p><Button v-if="canManage" type="submit" :disabled="busy">{{ busy ? 'Guardando…' : 'Guardar configuración' }}</Button></form></CardContent></Card>
       <Card><CardHeader><CardTitle>Módulos y miembros</CardTitle><CardDescription>Los cambios de módulos se aplican únicamente a este hogar y conservan sus datos.</CardDescription></CardHeader><CardContent class="flex flex-wrap gap-3"><Button as-child variant="outline"><RouterLink to="/modules">Gestionar módulos</RouterLink></Button><Button as-child variant="outline"><RouterLink to="/family">Mi familia</RouterLink></Button></CardContent></Card>
       <FileStorageCard />
